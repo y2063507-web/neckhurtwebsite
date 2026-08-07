@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>pnig - Instant Chat</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+    <script>
+        tailwind.config = { darkMode: 'class', theme: { extend: { colors: { darkbg: '#0f1115', panel: '#181b22', accent: '#00f0ff' } } } }
+    </script>
+</head>
+<body class="bg-darkbg text-gray-200 font-sans h-screen flex flex-col overflow-hidden">
+
+    <!-- AUTH SCREEN -->
+    <div id="auth-screen" class="flex-1 flex items-center justify-center p-4">
+        <div class="bg-panel border border-gray-800 p-8 rounded-2xl shadow-2xl w-full max-w-md text-center">
+            <h1 class="text-3xl font-extrabold tracking-wider text-accent mb-2">pnig</h1>
+            <p class="text-sm text-gray-400 mb-6">Zero friction. No passwords. Pure chat.</p>
+            
+            <!-- Option 1: Create New -->
+            <div class="mb-6 text-left">
+                <label class="text-xs uppercase font-semibold text-gray-500 mb-2 block">1. Enter Codename</label>
+                <div class="flex gap-2">
+                    <input id="username-input" type="text" placeholder="Your username..." class="flex-1 bg-darkbg border border-gray-700 rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-accent text-gray-200">
+                    <button id="create-btn" class="bg-accent text-darkbg font-bold px-5 py-2 rounded-lg text-sm hover:opacity-95 transition">Join</button>
+                </div>
+            </div>
+
+            <div class="relative flex py-2 items-center mb-6">
+                <div class="flex-grow border-t border-gray-800"></div>
+                <span class="flex-shrink mx-4 text-xs text-gray-600 uppercase">Or Import</span>
+                <div class="flex-grow border-t border-gray-800"></div>
+            </div>
+
+            <!-- Option 2: Import Cookie JSON -->
+            <div class="text-left">
+                <label class="text-xs uppercase font-semibold text-gray-500 mb-2 block">2. Restore Session Backup</label>
+                <input type="file" id="import-file" accept=".json" class="w-full text-xs text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-gray-800 file:text-accent hover:file:bg-gray-700 cursor-pointer mb-2">
+                <button id="import-btn" class="w-full bg-gray-800 border border-gray-700 text-gray-300 font-semibold py-2 rounded-lg text-sm hover:bg-gray-700 transition">Restore & Enter</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- CHAT SCREEN (Hidden by default) -->
+    <div id="chat-screen" class="hidden flex-1 flex h-screen overflow-hidden">
+        
+        <!-- SERVER SIDEBAR -->
+        <aside class="w-16 bg-[#111318] border-r border-gray-800 flex flex-col items-center py-4 gap-4">
+            <button onclick="switchServer('general')" class="w-12 h-12 rounded-2xl bg-panel hover:bg-accent hover:text-darkbg flex items-center justify-center font-bold transition text-accent shadow" title="General Lobby">
+                pn
+            </button>
+            <div class="w-8 h-[2px] bg-gray-800 rounded"></div>
+            
+            <div id="server-list" class="flex flex-col gap-3 flex-1 overflow-y-auto w-full items-center">
+                <!-- Servers injected dynamically -->
+            </div>
+
+            <button onclick="openServerModal()" class="w-12 h-12 rounded-full bg-panel hover:bg-green-500 hover:text-darkbg flex items-center justify-center font-bold text-xl transition text-green-400 shadow" title="Create Server">
+                +
+            </button>
+        </aside>
+
+        <!-- CHANNEL PANE -->
+        <div class="w-60 bg-panel border-r border-gray-800 flex flex-col">
+            <div class="p-4 border-b border-gray-800 font-bold text-accent text-sm flex justify-between items-center">
+                <span id="current-server-title" class="truncate">General Lobby</span>
+                <button onclick="exportSession()" class="text-xs text-gray-400 hover:text-white px-2 py-1 rounded bg-gray-800 border border-gray-700" title="Export Cookie Backup">💾 Backup</button>
+            </div>
+            <div class="p-3 flex-1 overflow-y-auto space-y-1">
+                <div class="text-xs font-semibold text-gray-500 uppercase px-2 mb-2">Channels</div>
+                <button class="w-full text-left px-3 py-2 rounded-lg bg-gray-800 text-gray-200 text-sm font-medium"># main</button>
+            </div>
+            <div class="p-3 border-t border-gray-800 text-xs text-gray-400 truncate flex items-center justify-between">
+                <span id="user-display-tag" class="font-semibold text-gray-300"></span>
+                <button onclick="logout()" class="text-red-400 hover:underline">Logout</button>
+            </div>
+        </div>
+
+        <!-- CHAT MAIN -->
+        <div class="flex-1 flex flex-col bg-darkbg">
+            <header class="bg-panel border-b border-gray-800 px-6 py-4 flex justify-between items-center">
+                <h2 id="current-channel-title" class="font-bold text-gray-200 text-sm tracking-wide"># main</h2>
+                <span class="text-xs text-green-400 flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-green-400 animate-pulse"></span> Connected</span>
+            </header>
+            
+            <div id="chat-messages" class="flex-1 overflow-y-auto p-6 space-y-3"></div>
+
+            <form id="chat-form" class="bg-panel border-t border-gray-800 p-4 flex gap-3">
+                <input id="message-input" type="text" placeholder="Type a message..." autocomplete="off" class="flex-1 bg-darkbg border border-gray-700 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-accent text-gray-200">
+                <button type="submit" class="bg-accent text-darkbg font-bold px-6 rounded-xl text-sm hover:opacity-90 transition">Send</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- CREATE SERVER MODAL -->
+    <div id="server-modal" class="hidden fixed inset-0 bg-black/80 flex items-center justify-center p-4">
+        <div class="bg-panel border border-gray-800 p-6 rounded-2xl w-full max-w-sm">
+            <h3 class="font-bold text-lg mb-4 text-gray-100">Create Custom Server</h3>
+            <input id="new-server-input" type="text" placeholder="Server Name (e.g. Hangout)" class="w-full bg-darkbg border border-gray-700 rounded-lg px-4 py-2 text-sm mb-4 focus:outline-none focus:border-accent text-gray-200">
+            <div class="flex justify-end gap-2">
+                <button onclick="closeServerModal()" class="px-4 py-2 text-sm text-gray-400 hover:text-gray-200">Cancel</button>
+                <button onclick="submitServer()" class="bg-accent text-darkbg font-bold px-4 py-2 rounded-lg text-sm">Create</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- FRONTEND APP LOGIC -->
+    <script>
+        // CHANGE THIS URL TO YOUR DEPLOYED BACKEND URL LATER
+        const BACKEND_URL = "https://your-backend-server.onrender.com"; 
+        let socket;
+        let currentSession = null;
+
+        window.addEventListener("DOMContentLoaded", () => {
+            const saved = localStorage.getItem("pnig_session");
+            if (saved) {
+                currentSession = JSON.parse(saved);
+                initChat(currentSession);
+            }
+        });
+
+        document.getElementById("create-btn").addEventListener("click", () => {
+            const username = document.getElementById("username-input").value.trim();
+            if (!username) return alert("Enter a username!");
+
+            currentSession = {
+                username: username,
+                userId: 'usr_' + Math.random().toString(36).substr(2, 9)
+            };
+            localStorage.setItem("pnig_session", JSON.stringify(currentSession));
+            initChat(currentSession);
+        });
+
+        document.getElementById("import-btn").addEventListener("click", () => {
+            const fileInput = document.getElementById("import-file");
+            if (!fileInput.files.length) return alert("Select a session backup JSON file.");
+
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                try {
+                    const data = JSON.parse(e.target.result);
+                    if (data.username && data.userId) {
+                        currentSession = data;
+                        localStorage.setItem("pnig_session", JSON.stringify(currentSession));
+                        initChat(currentSession);
+                    } else {
+                        alert("Invalid backup file format.");
+                    }
+                } catch (err) {
+                    alert("Could not read backup file.");
+                }
+            };
+            reader.readAsText(fileInput.files[0]);
+        });
+
+        function initChat(session) {
+            document.getElementById("auth-screen").classList.add("hidden");
+            document.getElementById("chat-screen").classList.remove("hidden");
+            document.getElementById("user-display-tag").innerText = "@" + session.username;
+
+            socket = io(BACKEND_URL);
+
+            socket.on("connect", () => {
+                socket.emit("auth_user", session);
+            });
+
+            socket.on("server_list", (servers) => {
+                const list = document.getElementById("server-list");
+                list.innerHTML = "";
+                for (const [id, srv] of Object.entries(servers)) {
+                    if (id === "general") continue;
+                    const btn = document.createElement("button");
+                    btn.className = "w-12 h-12 rounded-2xl bg-panel hover:bg-accent hover:text-darkbg flex items-center justify-center font-bold text-sm text-gray-300 transition shadow";
+                    btn.innerText = srv.name.substring(0, 2).toUpperCase();
+                    btn.title = srv.name;
+                    btn.onclick = () => switchServer(id, srv.name);
+                    list.appendChild(btn);
+                }
+            });
+
+            socket.on("server_switched", (serverId) => {
+                document.getElementById("chat-messages").innerHTML = "";
+            });
+
+            socket.on("server_created_success", (serverId) => {
+                closeServerModal();
+                switchServer(serverId);
+            });
+
+            socket.on("message", (msg) => {
+                const box = document.getElementById("chat-messages");
+                const div = document.createElement("div");
+
+                if (msg.system) {
+                    div.className = "text-center text-xs text-gray-500 my-1 font-mono";
+                    div.innerText = `— ${msg.text} —`;
+                } else {
+                    div.className = "flex flex-col";
+                    div.innerHTML = `<div class="flex items-baseline gap-2"><span class="font-semibold text-accent text-sm">${msg.username}</span><span class="text-[10px] text-gray-500">${msg.time || ''}</span></div><p class="text-sm text-gray-200 mt-0.5">${escapeHtml(msg.text)}</p>`;
+                }
+                box.appendChild(div);
+                box.scrollTop = box.scrollHeight;
+            });
+        }
+
+        function switchServer(id, name = "General Lobby") {
+            document.getElementById("current-server-title").innerText = name;
+            document.getElementById("current-channel-title").innerText = "# " + name.toLowerCase().replace(/\s+/g, '-');
+            socket.emit("join_server", id);
+        }
+
+        document.getElementById("chat-form").addEventListener("submit", (e) => {
+            e.preventDefault();
+            const input = document.getElementById("message-input");
+            const text = input.value;
+            if (text) {
+                socket.emit("chat_message", text);
+                input.value = "";
+            }
+        });
+
+        function exportSession() {
+            if (!currentSession) return;
+            const blob = new Blob([JSON.stringify(currentSession, null, 2)], { type: "application/json" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `pnig-backup-${currentSession.username}.json`;
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+
+        function logout() {
+            localStorage.removeItem("pnig_session");
+            window.location.reload();
+        }
+
+        function openServerModal() { document.getElementById("server-modal").classList.remove("hidden"); }
+        function closeServerModal() { document.getElementById("server-modal").classList.add("hidden"); }
+        function submitServer() {
+            const name = document.getElementById("new-server-input").value.trim();
+            if (name) socket.emit("create_server", name);
+        }
+
+        function escapeHtml(text) {
+            return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        }
+    </script>
+</body>
+</html>
