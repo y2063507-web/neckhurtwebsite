@@ -169,13 +169,19 @@ io.on("connection", (socket) => {
         io.emit("server_list", servers);
     });
 
-    socket.on("upload_server_sticker", ({ serverId, stickerUrl }) => {
-        if (!servers[serverId] || !stickerUrl) return;
+// High-Performance Binary Sticker Upload Handler
+    socket.on("upload_server_sticker_binary", (data) => {
+        const serverId = data.serverId;
+        if (!servers[serverId] || !data.file) return;
         
         const isGeneralAdmin = (serverId === "general" && socket.userId === ADMIN_USER_ID);
         const isCustomOwner = (serverId !== "general" && servers[serverId].owner === socket.username);
 
         if (!isGeneralAdmin && !isCustomOwner) return;
+
+        // Convert Node.js Buffer to a data URL instantly without blocking
+        const base64Data = data.file.toString("base64");
+        const stickerUrl = `data:${data.fileType};base64,${base64Data}`;
 
         if (!servers[serverId].stickers) {
             servers[serverId].stickers = [];
