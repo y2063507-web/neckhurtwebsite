@@ -10,7 +10,7 @@
         tailwind.config = { darkMode: 'class', theme: { extend: { colors: { darkbg: '#0f1115', panel: '#181b22', accent: '#00f0ff' } } } }
     </script>
 </head>
-<body class="bg-darkbg text-gray-200 font-sans h-screen flex flex-col overflow-hidden">
+<body class="bg-darkbg text-gray-200 font-sans h-screen flex flex-col overflow-hidden relative">
 
     <!-- AUTH SCREEN -->
     <div id="auth-screen" class="flex-1 flex items-center justify-center p-4">
@@ -82,7 +82,7 @@
         </div>
 
         <!-- CHAT MAIN -->
-        <div class="flex-1 flex flex-col bg-darkbg">
+        <div class="flex-1 flex flex-col bg-darkbg relative">
             <header class="bg-panel border-b border-gray-800 px-6 py-4 flex justify-between items-center">
                 <h2 id="current-channel-title" class="font-bold text-gray-200 text-sm tracking-wide"># main</h2>
                 <span class="text-xs text-green-400 flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-green-400 animate-pulse"></span> Connected</span>
@@ -90,21 +90,57 @@
             
             <div id="chat-messages" class="flex-1 overflow-y-auto p-6 space-y-3"></div>
 
+            <!-- STICKER & EMOJI POPUP DRAWER -->
+            <div id="sticker-drawer" class="hidden absolute bottom-20 left-4 bg-panel border border-gray-700 rounded-2xl p-4 shadow-2xl w-80 z-50 flex flex-col gap-3">
+                <div class="flex justify-between items-center border-b border-gray-800 pb-2">
+                    <span class="text-xs font-bold text-accent uppercase tracking-wider">Stickers & Emojis</span>
+                    <button onclick="toggleStickerDrawer()" class="text-gray-400 hover:text-white text-sm">✕</button>
+                </div>
+                
+                <!-- Quick Emojis -->
+                <div>
+                    <span class="text-[10px] text-gray-500 uppercase font-semibold block mb-1">Emojis</span>
+                    <div class="grid grid-cols-6 gap-1 text-xl">
+                        <button onclick="sendEmoji('🔥')" class="p-1 hover:bg-gray-800 rounded">🔥</button>
+                        <button onclick="sendEmoji('💀')" class="p-1 hover:bg-gray-800 rounded">💀</button>
+                        <button onclick="sendEmoji('😂')" class="p-1 hover:bg-gray-800 rounded">😂</button>
+                        <button onclick="sendEmoji('😎')" class="p-1 hover:bg-gray-800 rounded">😎</button>
+                        <button onclick="sendEmoji('🚀')" class="p-1 hover:bg-gray-800 rounded">🚀</button>
+                        <button onclick="sendEmoji('👍')" class="p-1 hover:bg-gray-800 rounded">👍</button>
+                        <button onclick="sendEmoji('❤️')" class="p-1 hover:bg-gray-800 rounded">❤️</button>
+                        <button onclick="sendEmoji('🎉')" class="p-1 hover:bg-gray-800 rounded">🎉</button>
+                    </div>
+                </div>
+
+                <!-- Server Custom Stickers -->
+                <div>
+                    <div class="flex justify-between items-center mb-1">
+                        <span class="text-[10px] text-gray-500 uppercase font-semibold">Server Stickers</span>
+                        <input type="file" id="sticker-upload-input" accept="image/*" class="hidden">
+                        <button id="upload-sticker-btn" onclick="document.getElementById('sticker-upload-input').click()" class="hidden text-[10px] text-accent hover:underline">+ Upload Sticker</button>
+                    </div>
+                    <div id="server-stickers-grid" class="grid grid-cols-3 gap-2 max-h-36 overflow-y-auto">
+                        <!-- Loaded dynamically -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- CHAT INPUT FORM -->
             <form id="chat-form" class="bg-panel border-t border-gray-800 p-4 flex gap-3 items-center">
-                <!-- Removed 'accept' attribute to allow any file type (videos, code files, zips, txt, etc.) -->
                 <input type="file" id="file-input" class="hidden">
-                <button type="button" onclick="document.getElementById('file-input').click()" class="text-gray-400 hover:text-accent p-2 text-xl transition" title="Upload Any File or Video">📎</button>
+                <button type="button" onclick="toggleStickerDrawer()" class="text-gray-400 hover:text-accent p-2 text-xl transition" title="Stickers & Emojis">🎨</button>
+                <button type="button" onclick="document.getElementById('file-input').click()" class="text-gray-400 hover:text-accent p-2 text-xl transition" title="Upload File or Video">📎</button>
                 <input id="message-input" type="text" placeholder="Type a message..." autocomplete="off" class="flex-1 bg-darkbg border border-gray-700 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-accent text-gray-200">
                 <button type="submit" class="bg-accent text-darkbg font-bold px-6 rounded-xl text-sm hover:opacity-90 transition">Send</button>
             </form>
         </div>
     </div>
 
-    <!-- CREATE SERVER MODAL -->
+    <!-- MODALS -->
     <div id="server-modal" class="hidden fixed inset-0 bg-black/80 flex items-center justify-center p-4">
         <div class="bg-panel border border-gray-800 p-6 rounded-2xl w-full max-w-sm">
             <h3 class="font-bold text-lg mb-4 text-gray-100">Create Custom Server</h3>
-            <input id="new-server-input" type="text" placeholder="Server Name (e.g. Hangout)" class="w-full bg-darkbg border border-gray-700 rounded-lg px-4 py-2 text-sm mb-4 focus:outline-none focus:border-accent text-gray-200">
+            <input id="new-server-input" type="text" placeholder="Server Name" class="w-full bg-darkbg border border-gray-700 rounded-lg px-4 py-2 text-sm mb-4 focus:outline-none focus:border-accent text-gray-200">
             <div class="flex justify-end gap-2">
                 <button onclick="closeServerModal()" class="px-4 py-2 text-sm text-gray-400 hover:text-gray-200">Cancel</button>
                 <button onclick="submitServer()" class="bg-accent text-darkbg font-bold px-4 py-2 rounded-lg text-sm">Create</button>
@@ -112,11 +148,10 @@
         </div>
     </div>
 
-    <!-- CREATE CHANNEL MODAL -->
     <div id="channel-modal" class="hidden fixed inset-0 bg-black/80 flex items-center justify-center p-4">
         <div class="bg-panel border border-gray-800 p-6 rounded-2xl w-full max-w-sm">
             <h3 class="font-bold text-lg mb-4 text-gray-100">Create Channel</h3>
-            <input id="new-channel-input" type="text" placeholder="Channel Name (e.g. general)" class="w-full bg-darkbg border border-gray-700 rounded-lg px-4 py-2 text-sm mb-4 focus:outline-none focus:border-accent text-gray-200">
+            <input id="new-channel-input" type="text" placeholder="Channel Name" class="w-full bg-darkbg border border-gray-700 rounded-lg px-4 py-2 text-sm mb-4 focus:outline-none focus:border-accent text-gray-200">
             <div class="flex justify-end gap-2">
                 <button onclick="closeChannelModal()" class="px-4 py-2 text-sm text-gray-400 hover:text-gray-200">Cancel</button>
                 <button onclick="submitChannel()" class="bg-accent text-darkbg font-bold px-4 py-2 rounded-lg text-sm">Create</button>
@@ -124,14 +159,13 @@
         </div>
     </div>
 
-    <!-- EDIT SERVER MODAL -->
     <div id="edit-server-modal" class="hidden fixed inset-0 bg-black/80 flex items-center justify-center p-4">
         <div class="bg-panel border border-gray-800 p-6 rounded-2xl w-full max-w-sm">
             <h3 class="font-bold text-lg mb-4 text-gray-100">Customize Server</h3>
             <input id="edit-server-input" type="text" placeholder="New Server Name" class="w-full bg-darkbg border border-gray-700 rounded-lg px-4 py-2 text-sm mb-4 focus:outline-none focus:border-accent text-gray-200">
             <div class="flex justify-end gap-2">
                 <button onclick="closeEditServerModal()" class="px-4 py-2 text-sm text-gray-400 hover:text-gray-200">Cancel</button>
-                <button onclick="submitEditServer()" class="bg-accent text-darkbg font-bold px-4 py-2 rounded-lg text-sm">Save Changes</button>
+                <button onclick="submitEditServer()" class="bg-accent text-darkbg font-bold px-4 py-2 rounded-lg text-sm">Save</button>
             </div>
         </div>
     </div>
@@ -145,7 +179,8 @@
         let currentSession = null;
         let currentServerId = "general";
         let currentChannel = "main";
-        let allServers = { "general": { name: "General Lobby", owner: "System", channels: ["main", "random"] } };
+        let allServers = { "general": { name: "General Lobby", owner: "System", channels: ["main", "random"], stickers: [] } };
+        let currentServerStickers = [];
 
         window.addEventListener("DOMContentLoaded", () => {
             const saved = localStorage.getItem("pnig_session");
@@ -169,7 +204,7 @@
 
         document.getElementById("import-btn").addEventListener("click", () => {
             const fileInput = document.getElementById("import-file");
-            if (!fileInput.files.length) return alert("Select a session backup JSON file.");
+            if (!fileInput.files.length) return alert("Select a backup JSON file.");
 
             const reader = new FileReader();
             reader.onload = (e) => {
@@ -180,10 +215,10 @@
                         localStorage.setItem("pnig_session", JSON.stringify(currentSession));
                         initChat(currentSession);
                     } else {
-                        alert("Invalid backup file format.");
+                        alert("Invalid format.");
                     }
                 } catch (err) {
-                    alert("Could not read backup file.");
+                    alert("Could not read backup.");
                 }
             };
             reader.readAsText(fileInput.files[0]);
@@ -210,7 +245,9 @@
             socket.on("server_switched", (data) => {
                 currentServerId = data.serverId;
                 currentChannel = data.channel;
+                currentServerStickers = data.stickers || [];
                 renderChannels(data.channels);
+                renderStickerDrawer(currentServerStickers);
                 updateEditButtonVisibility();
             });
 
@@ -225,6 +262,11 @@
                     allServers[currentServerId].channels = channels;
                 }
                 renderChannels(channels);
+            });
+
+            socket.on("stickers_updated", (stickers) => {
+                currentServerStickers = stickers;
+                renderStickerDrawer(stickers);
             });
 
             socket.on("server_created_success", (serverId) => {
@@ -242,6 +284,64 @@
             socket.on("message", (msg) => {
                 renderMessage(msg);
             });
+
+            socket.on("message_deleted", (msgId) => {
+                const el = document.getElementById(`msg-${msgId}`);
+                if (el) el.remove();
+            });
+        }
+
+        function toggleStickerDrawer() {
+            document.getElementById("sticker-drawer").classList.toggle("hidden");
+        }
+
+        function sendEmoji(emoji) {
+            const input = document.getElementById("message-input");
+            input.value += emoji;
+            input.focus();
+            toggleStickerDrawer();
+        }
+
+        function sendSticker(url) {
+            socket.emit("chat_message", {
+                text: "",
+                fileUrl: url,
+                fileName: "sticker.gif",
+                fileType: "image/gif"
+            });
+            toggleStickerDrawer();
+        }
+
+        // Upload sticker for the current server (Owner only)
+        document.getElementById("sticker-upload-input").addEventListener("change", (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            if (file.size > 2 * 1024 * 1024) {
+                alert("Sticker must be under 2MB!");
+                return;
+            }
+
+            const reader = new FileReader();
+            reader.onload = (uploadEvent) => {
+                socket.emit("upload_server_sticker", {
+                    serverId: currentServerId,
+                    stickerUrl: uploadEvent.target.result
+                });
+                e.target.value = "";
+            };
+            reader.readAsDataURL(file);
+        });
+
+        function renderStickerDrawer(stickers) {
+            const grid = document.getElementById("server-stickers-grid");
+            grid.innerHTML = "";
+            stickers.forEach(url => {
+                const btn = document.createElement("button");
+                btn.className = "bg-darkbg border border-gray-800 rounded-lg p-1 hover:border-accent transition";
+                btn.innerHTML = `<img src="${url}" class="w-full h-12 object-cover rounded">`;
+                btn.onclick = () => sendSticker(url);
+                grid.appendChild(btn);
+            });
         }
 
         function renderMessage(msg) {
@@ -252,9 +352,18 @@
                 div.className = "text-center text-xs text-gray-500 my-1 font-mono";
                 div.innerText = `— ${msg.text} —`;
             } else {
-                div.className = "flex flex-col gap-1";
-                let contentHtml = `<div class="flex items-baseline gap-2"><span class="font-semibold text-accent text-sm">${msg.username}</span><span class="text-[10px] text-gray-500">${msg.time || ''}</span></div>`;
+                div.id = `msg-${msg.id}`;
+                div.className = "flex flex-col gap-1 group relative";
+
+                let headerHtml = `<div class="flex items-baseline justify-between"><div class="flex items-baseline gap-2"><span class="font-semibold text-accent text-sm">${msg.username}</span><span class="text-[10px] text-gray-500">${msg.time || ''}</span></div>`;
                 
+                // Show delete button on hover if current user is the author
+                if (currentSession && msg.username === currentSession.username) {
+                    headerHtml += `<button onclick="deleteMessage('${msg.id}')" class="text-xs text-gray-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition px-1" title="Delete message">🗑️</button>`;
+                }
+                headerHtml += `</div>`;
+
+                let contentHtml = headerHtml;
                 if (msg.text) {
                     contentHtml += `<p class="text-sm text-gray-200 mt-0.5">${escapeHtml(msg.text)}</p>`;
                 }
@@ -262,11 +371,10 @@
                 if (msg.fileUrl) {
                     const fType = msg.fileType || "";
                     if (fType.startsWith("image/")) {
-                        contentHtml += `<div class="mt-2 max-w-xs sm:max-w-sm rounded-xl overflow-hidden border border-gray-700 bg-darkbg"><img src="${msg.fileUrl}" alt="${escapeHtml(msg.fileName || 'image')}" class="w-full h-auto object-cover max-h-64 cursor-pointer" onclick="window.open('${msg.fileUrl}', '_blank')"></div>`;
+                        contentHtml += `<div class="mt-2 max-w-[200px] rounded-xl overflow-hidden bg-transparent"><img src="${msg.fileUrl}" alt="media" class="w-full h-auto object-cover cursor-pointer" onclick="window.open('${msg.fileUrl}', '_blank')"></div>`;
                     } else if (fType.startsWith("video/")) {
                         contentHtml += `<div class="mt-2 max-w-sm rounded-xl overflow-hidden border border-gray-700 bg-darkbg"><video controls class="w-full max-h-64"><source src="${msg.fileUrl}" type="${fType}">Your browser does not support video playback.</video></div>`;
                     } else {
-                        // Generic download card for code files, zips, text documents, etc.
                         contentHtml += `<div class="mt-2 p-3 rounded-xl border border-gray-700 bg-gray-900 flex items-center gap-3 max-w-sm"><span class="text-2xl">📦</span><div class="overflow-hidden"><a href="${msg.fileUrl}" download="${msg.fileName || 'file'}" class="text-xs font-semibold text-accent hover:underline block truncate">${escapeHtml(msg.fileName || 'Download File')}</a><span class="text-[10px] text-gray-400">Attached File</span></div></div>`;
                     }
                 }
@@ -276,7 +384,10 @@
             box.scrollTop = box.scrollHeight;
         }
 
-        // Handle Unrestricted File Attachments (Videos, Code, Zips, etc.) up to 20MB
+        function deleteMessage(msgId) {
+            socket.emit("delete_message", msgId);
+        }
+
         document.getElementById("file-input").addEventListener("change", (e) => {
             const file = e.target.files[0];
             if (!file) return;
@@ -289,16 +400,12 @@
 
             const reader = new FileReader();
             reader.onload = (uploadEvent) => {
-                const fileDataUrl = uploadEvent.target.result;
-                const caption = document.getElementById("message-input").value.trim();
-                
                 socket.emit("chat_message", {
-                    text: caption,
-                    fileUrl: fileDataUrl,
+                    text: document.getElementById("message-input").value.trim(),
+                    fileUrl: uploadEvent.target.result,
                     fileName: file.name,
                     fileType: file.type
                 });
-
                 document.getElementById("message-input").value = "";
                 e.target.value = "";
             };
@@ -328,9 +435,7 @@
                 btn.className = `w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition ${isActive ? 'bg-gray-800 text-accent' : 'text-gray-400 hover:bg-gray-850 hover:text-gray-200'}`;
                 btn.innerText = "# " + ch;
                 btn.onclick = () => {
-                    if (currentChannel !== ch) {
-                        socket.emit("join_channel", ch);
-                    }
+                    if (currentChannel !== ch) socket.emit("join_channel", ch);
                 };
                 list.appendChild(btn);
             });
@@ -358,16 +463,19 @@
         function updateEditButtonVisibility() {
             const editBtn = document.getElementById("edit-server-btn");
             const channelAddBtn = document.getElementById("add-channel-btn");
+            const stickerUploadBtn = document.getElementById("upload-sticker-btn");
 
             const isGeneralAdmin = (currentServerId === "general" && currentSession?.userId === ADMIN_USER_ID);
             const isCustomOwner = (currentServerId !== "general" && allServers[currentServerId] && allServers[currentServerId].owner === currentSession?.username);
 
             if (isGeneralAdmin || isCustomOwner) {
                 editBtn.classList.remove("hidden");
-                if (channelAddBtn) channelAddBtn.classList.add("hidden") ? null : channelAddBtn.classList.remove("hidden");
+                if (channelAddBtn) channelAddBtn.classList.remove("hidden");
+                if (stickerUploadBtn) stickerUploadBtn.classList.remove("hidden");
             } else {
                 editBtn.classList.add("hidden");
                 if (channelAddBtn) channelAddBtn.classList.add("hidden");
+                if (stickerUploadBtn) stickerUploadBtn.classList.add("hidden");
             }
         }
 
@@ -417,9 +525,7 @@
 
         function openEditServerModal() {
             const currentSrv = allServers[currentServerId];
-            if (currentSrv) {
-                document.getElementById("edit-server-input").value = currentSrv.name;
-            }
+            if (currentSrv) document.getElementById("edit-server-input").value = currentSrv.name;
             document.getElementById("edit-server-modal").classList.remove("hidden");
         }
         function closeEditServerModal() { document.getElementById("edit-server-modal").classList.add("hidden"); }
