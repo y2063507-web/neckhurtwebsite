@@ -9,13 +9,11 @@ app.use(cors());
 const server = http.createServer(app);
 const io = new Server(server, {
     cors: { origin: "*" },
-    maxHttpBufferSize: 5 * 1024 * 1024 // Allow up to 5MB file payloads over sockets
+    maxHttpBufferSize: 25 * 1024 * 1024 // Increased to 25MB to allow videos and larger files
 });
 
-// Admin User ID allowed to manage the General Lobby
 const ADMIN_USER_ID = "usr_kbyc5yhe2";
 
-// Store active custom servers in memory with an array of channels
 const servers = {
     "general": { 
         name: "General Lobby", 
@@ -24,17 +22,13 @@ const servers = {
     }
 };
 
-// Store chat history per room: { "server_channel": [ { username, text, fileUrl, fileName, fileType, time }, ... ] }
 const chatHistories = {};
 const MAX_HISTORY = 50;
-
-// Track users who have already been announced on custom servers to avoid repeat spam
 const announcedCustomUsers = new Set();
 
 io.on("connection", (socket) => {
     console.log(`User connected: ${socket.id}`);
 
-    // Handle user authentication handshake via session token
     socket.on("auth_user", (sessionData) => {
         socket.username = sessionData.username;
         socket.userId = sessionData.userId;
@@ -45,10 +39,8 @@ io.on("connection", (socket) => {
         const roomKey = "general_main";
         socket.join(roomKey);
         
-        // Send list of available servers to the user
         socket.emit("server_list", servers);
 
-        // Send past history for default channel
         if (chatHistories[roomKey]) {
             socket.emit("load_history", chatHistories[roomKey]);
         } else {
@@ -56,11 +48,9 @@ io.on("connection", (socket) => {
         }
     });
 
-    // Handle switching or joining servers
     socket.on("join_server", (serverId) => {
         if (!servers[serverId]) return;
 
-        // Leave old room
         if (socket.currentServer && socket.currentChannel) {
             socket.leave(`${socket.currentServer}_${socket.currentChannel}`);
         }
@@ -77,14 +67,12 @@ io.on("connection", (socket) => {
             channels: servers[serverId].channels 
         });
 
-        // Send past history for the channel
         if (chatHistories[roomKey]) {
             socket.emit("load_history", chatHistories[roomKey]);
         } else {
             socket.emit("load_history", []);
         }
 
-        // Only announce on custom servers once per session
         if (serverId !== "general" && socket.username) {
             const userKey = `${serverId}-${socket.username}`;
             if (!announcedCustomUsers.has(userKey)) {
@@ -97,7 +85,6 @@ io.on("connection", (socket) => {
         }
     });
 
-    // Handle switching channels inside the current server
     socket.on("join_channel", (channelName) => {
         if (!servers[socket.currentServer]) return;
         if (!servers[socket.currentServer].channels.includes(channelName)) return;
@@ -110,7 +97,6 @@ io.on("connection", (socket) => {
 
         socket.emit("channel_switched", channelName);
 
-        // Send history for the new channel
         if (chatHistories[roomKey]) {
             socket.emit("load_history", chatHistories[roomKey]);
         } else {
@@ -118,14 +104,12 @@ io.on("connection", (socket) => {
         }
     });
 
-    // Handle creating a new channel inside the current server
     socket.on("create_channel", (channelName) => {
         const cleanName = channelName.toLowerCase().replace(/[^a-z0-9-_]/g, '-').trim();
         if (!cleanName || !servers[socket.currentServer]) return;
 
         const srv = servers[socket.currentServer];
 
-        // Security permissions
         if (socket.currentServer === "general") {
             if (socket.userId !== ADMIN_USER_ID) {
                 socket.emit("message", { system: true, text: "Permission denied: Only admin can add channels here." });
@@ -147,7 +131,6 @@ io.on("connection", (socket) => {
         }
     });
 
-    // Handle creation of a new custom server
     socket.on("create_server", (serverName) => {
         const serverId = "srv_" + Math.random().toString(36).substr(2, 6);
         servers[serverId] = { 
@@ -160,7 +143,6 @@ io.on("connection", (socket) => {
         socket.emit("server_created_success", serverId);
     });
 
-    // Handle server customization
     socket.on("update_server", ({ serverId, newName }) => {
         if (!servers[serverId]) return;
 
@@ -189,7 +171,6 @@ io.on("connection", (socket) => {
         });
     });
 
-    // Handle incoming chat messages (supports text and file/meme uploads)
     socket.on("chat_message", (content) => {
         if (!socket.currentServer || !socket.currentChannel) return;
 
