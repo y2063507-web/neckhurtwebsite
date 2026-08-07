@@ -169,7 +169,7 @@ io.on("connection", (socket) => {
         io.emit("server_list", servers);
     });
 
-// High-Performance Binary Sticker Upload Handler
+    // High-Performance Binary Sticker Upload Handler
     socket.on("upload_server_sticker_binary", (data) => {
         const serverId = data.serverId;
         if (!servers[serverId] || !data.file) return;
@@ -179,7 +179,6 @@ io.on("connection", (socket) => {
 
         if (!isGeneralAdmin && !isCustomOwner) return;
 
-        // Convert Node.js Buffer to a data URL instantly without blocking
         const base64Data = data.file.toString("base64");
         const stickerUrl = `data:${data.fileType};base64,${base64Data}`;
 
@@ -220,7 +219,6 @@ io.on("connection", (socket) => {
 
         let fileUrl = null;
         if (data.file) {
-            // Socket.IO automatically transforms binary blobs into a Node.js Buffer
             const base64Data = data.file.toString("base64");
             fileUrl = `data:${data.fileType};base64,${base64Data}`;
         }
