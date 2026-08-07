@@ -91,8 +91,9 @@
             <div id="chat-messages" class="flex-1 overflow-y-auto p-6 space-y-3"></div>
 
             <form id="chat-form" class="bg-panel border-t border-gray-800 p-4 flex gap-3 items-center">
-                <input type="file" id="file-input" class="hidden" accept="image/*,.gif,.png,.jpg,.jpeg,.webp">
-                <button type="button" onclick="document.getElementById('file-input').click()" class="text-gray-400 hover:text-accent p-2 text-xl transition" title="Upload Image or Meme">📎</button>
+                <!-- Removed 'accept' attribute to allow any file type (videos, code files, zips, txt, etc.) -->
+                <input type="file" id="file-input" class="hidden">
+                <button type="button" onclick="document.getElementById('file-input').click()" class="text-gray-400 hover:text-accent p-2 text-xl transition" title="Upload Any File or Video">📎</button>
                 <input id="message-input" type="text" placeholder="Type a message..." autocomplete="off" class="flex-1 bg-darkbg border border-gray-700 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-accent text-gray-200">
                 <button type="submit" class="bg-accent text-darkbg font-bold px-6 rounded-xl text-sm hover:opacity-90 transition">Send</button>
             </form>
@@ -259,10 +260,14 @@
                 }
                 
                 if (msg.fileUrl) {
-                    if (msg.fileType && msg.fileType.startsWith("image/")) {
+                    const fType = msg.fileType || "";
+                    if (fType.startsWith("image/")) {
                         contentHtml += `<div class="mt-2 max-w-xs sm:max-w-sm rounded-xl overflow-hidden border border-gray-700 bg-darkbg"><img src="${msg.fileUrl}" alt="${escapeHtml(msg.fileName || 'image')}" class="w-full h-auto object-cover max-h-64 cursor-pointer" onclick="window.open('${msg.fileUrl}', '_blank')"></div>`;
+                    } else if (fType.startsWith("video/")) {
+                        contentHtml += `<div class="mt-2 max-w-sm rounded-xl overflow-hidden border border-gray-700 bg-darkbg"><video controls class="w-full max-h-64"><source src="${msg.fileUrl}" type="${fType}">Your browser does not support video playback.</video></div>`;
                     } else {
-                        contentHtml += `<div class="mt-2 p-3 rounded-xl border border-gray-700 bg-gray-900 flex items-center gap-3"><span class="text-xl">📄</span><div class="overflow-hidden"><a href="${msg.fileUrl}" download="${msg.fileName || 'file'}" class="text-xs font-semibold text-accent hover:underline block truncate">${escapeHtml(msg.fileName || 'Download File')}</a><span class="text-[10px] text-gray-400">Attached File</span></div></div>`;
+                        // Generic download card for code files, zips, text documents, etc.
+                        contentHtml += `<div class="mt-2 p-3 rounded-xl border border-gray-700 bg-gray-900 flex items-center gap-3 max-w-sm"><span class="text-2xl">📦</span><div class="overflow-hidden"><a href="${msg.fileUrl}" download="${msg.fileName || 'file'}" class="text-xs font-semibold text-accent hover:underline block truncate">${escapeHtml(msg.fileName || 'Download File')}</a><span class="text-[10px] text-gray-400">Attached File</span></div></div>`;
                     }
                 }
                 div.innerHTML = contentHtml;
@@ -271,13 +276,13 @@
             box.scrollTop = box.scrollHeight;
         }
 
-        // Handle File Attachment Uploads
+        // Handle Unrestricted File Attachments (Videos, Code, Zips, etc.) up to 20MB
         document.getElementById("file-input").addEventListener("change", (e) => {
             const file = e.target.files[0];
             if (!file) return;
 
-            if (file.size > 3 * 1024 * 1024) {
-                alert("File is too large! Please choose an image under 3MB.");
+            if (file.size > 20 * 1024 * 1024) {
+                alert("File is too large! Please choose a file under 20MB.");
                 e.target.value = "";
                 return;
             }
@@ -359,7 +364,7 @@
 
             if (isGeneralAdmin || isCustomOwner) {
                 editBtn.classList.remove("hidden");
-                if (channelAddBtn) channelAddBtn.classList.remove("hidden");
+                if (channelAddBtn) channelAddBtn.classList.add("hidden") ? null : channelAddBtn.classList.remove("hidden");
             } else {
                 editBtn.classList.add("hidden");
                 if (channelAddBtn) channelAddBtn.classList.add("hidden");
