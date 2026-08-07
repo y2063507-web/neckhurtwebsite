@@ -189,7 +189,7 @@
         let currentChannel = "main";
         let allServers = { "general": { name: "General Lobby", owner: "System", channels: ["main", "random"], stickers: [] } };
         let currentServerStickers = [];
-        let pendingFile = null; // Stores direct File reference for zero-lag binary upload
+        let pendingFile = null;
 
         window.addEventListener("DOMContentLoaded", () => {
             const saved = localStorage.getItem("pnig_session");
@@ -321,7 +321,7 @@
             toggleStickerDrawer();
         }
 
-        // Lightning-fast staging using URL.createObjectURL (0ms delay, no blocking FileReader)
+        // Lightning-fast file staging using URL.createObjectURL (0ms delay)
         document.getElementById("file-input").addEventListener("change", (e) => {
             const file = e.target.files[0];
             if (!file) return;
@@ -332,7 +332,7 @@
                 return;
             }
 
-            pendingFile = file; // Store raw file reference
+            pendingFile = file;
 
             const previewBox = document.getElementById("attachment-preview-box");
             const thumbnail = document.getElementById("preview-thumbnail");
@@ -359,22 +359,24 @@
             document.getElementById("file-input").value = "";
         }
 
+        // Lightning-fast sticker staging using raw binary streams (0ms lag)
         document.getElementById("sticker-upload-input").addEventListener("change", (e) => {
             const file = e.target.files[0];
             if (!file) return;
+            
             if (file.size > 2 * 1024 * 1024) {
                 alert("Sticker must be under 2MB!");
+                e.target.value = "";
                 return;
             }
-            const reader = new FileReader();
-            reader.onload = (uploadEvent) => {
-                socket.emit("upload_server_sticker", {
-                    serverId: currentServerId,
-                    stickerUrl: uploadEvent.target.result
-                });
-                e.target.value = "";
-            };
-            reader.readAsDataURL(file);
+
+            socket.emit("upload_server_sticker_binary", {
+                serverId: currentServerId,
+                file: file,
+                fileType: file.type
+            });
+
+            e.target.value = "";
         });
 
         function renderStickerDrawer(stickers) {
@@ -432,7 +434,6 @@
             socket.emit("delete_message", msgId);
         }
 
-        // Submitting sends text + direct binary file over socket.io seamlessly
         document.getElementById("chat-form").addEventListener("submit", (e) => {
             e.preventDefault();
             const input = document.getElementById("message-input");
@@ -443,7 +444,7 @@
             if (pendingFile) {
                 socket.emit("upload_file_msg", {
                     text: text,
-                    file: pendingFile, // Socket.IO streams this raw binary chunk instantly
+                    file: pendingFile,
                     fileName: pendingFile.name,
                     fileType: pendingFile.type
                 });
