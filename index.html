@@ -47,7 +47,7 @@
         
         <!-- SERVER SIDEBAR -->
         <aside class="w-16 bg-[#111318] border-r border-gray-800 flex flex-col items-center py-4 gap-4">
-            <button onclick="switchServer('general')" class="w-12 h-12 rounded-2xl bg-panel hover:bg-accent hover:text-darkbg flex items-center justify-center font-bold transition text-accent shadow" title="General Lobby">
+            <button onclick="switchServer('general', 'General Lobby')" class="w-12 h-12 rounded-2xl bg-panel hover:bg-accent hover:text-darkbg flex items-center justify-center font-bold transition text-accent shadow" title="General Lobby">
                 pn
             </button>
             <div class="w-8 h-[2px] bg-gray-800 rounded"></div>
@@ -64,7 +64,10 @@
         <!-- CHANNEL PANE -->
         <div class="w-60 bg-panel border-r border-gray-800 flex flex-col">
             <div class="p-4 border-b border-gray-800 font-bold text-accent text-sm flex justify-between items-center">
-                <span id="current-server-title" class="truncate">General Lobby</span>
+                <div class="flex items-center gap-1.5 truncate">
+                    <span id="current-server-title" class="truncate">General Lobby</span>
+                    <button id="edit-server-btn" onclick="openEditServerModal()" class="hidden text-xs text-gray-400 hover:text-white px-1.5 py-0.5 rounded bg-gray-800 border border-gray-700" title="Customize Server">⚙️</button>
+                </div>
                 <button onclick="exportSession()" class="text-xs text-gray-400 hover:text-white px-2 py-1 rounded bg-gray-800 border border-gray-700" title="Export Cookie Backup">💾 Backup</button>
             </div>
             <div class="p-3 flex-1 overflow-y-auto space-y-1">
@@ -105,12 +108,25 @@
         </div>
     </div>
 
+    <!-- EDIT SERVER MODAL -->
+    <div id="edit-server-modal" class="hidden fixed inset-0 bg-black/80 flex items-center justify-center p-4">
+        <div class="bg-panel border border-gray-800 p-6 rounded-2xl w-full max-w-sm">
+            <h3 class="font-bold text-lg mb-4 text-gray-100">Customize Server</h3>
+            <input id="edit-server-input" type="text" placeholder="New Server Name" class="w-full bg-darkbg border border-gray-700 rounded-lg px-4 py-2 text-sm mb-4 focus:outline-none focus:border-accent text-gray-200">
+            <div class="flex justify-end gap-2">
+                <button onclick="closeEditServerModal()" class="px-4 py-2 text-sm text-gray-400 hover:text-gray-200">Cancel</button>
+                <button onclick="submitEditServer()" class="bg-accent text-darkbg font-bold px-4 py-2 rounded-lg text-sm">Save Changes</button>
+            </div>
+        </div>
+    </div>
+
     <!-- FRONTEND APP LOGIC -->
     <script>
-        // CHANGE THIS URL TO YOUR DEPLOYED BACKEND URL LATER
         const BACKEND_URL = "https://neckhurtwebsite.onrender.com"; 
         let socket;
         let currentSession = null;
+        let currentServerId = "general";
+        let allServers = { "general": { name: "General Lobby", owner: "System" } };
 
         window.addEventListener("DOMContentLoaded", () => {
             const saved = localStorage.getItem("pnig_session");
@@ -166,8 +182,10 @@
             });
 
             socket.on("server_list", (servers) => {
+                allServers = servers;
                 const list = document.getElementById("server-list");
                 list.innerHTML = "";
+                
                 for (const [id, srv] of Object.entries(servers)) {
                     if (id === "general") continue;
                     const btn = document.createElement("button");
@@ -177,15 +195,18 @@
                     btn.onclick = () => switchServer(id, srv.name);
                     list.appendChild(btn);
                 }
+                updateEditButtonVisibility();
             });
 
             socket.on("server_switched", (serverId) => {
+                currentServerId = serverId;
                 document.getElementById("chat-messages").innerHTML = "";
+                updateEditButtonVisibility();
             });
 
             socket.on("server_created_success", (serverId) => {
                 closeServerModal();
-                switchServer(serverId);
+                switchServer(serverId, allServers[serverId] ? allServers[serverId].name : "Custom Server");
             });
 
             socket.on("message", (msg) => {
@@ -205,9 +226,20 @@
         }
 
         function switchServer(id, name = "General Lobby") {
+            currentServerId = id;
             document.getElementById("current-server-title").innerText = name;
             document.getElementById("current-channel-title").innerText = "# " + name.toLowerCase().replace(/\s+/g, '-');
             socket.emit("join_server", id);
+            updateEditButtonVisibility();
+        }
+
+        function updateEditButtonVisibility() {
+            const editBtn = document.getElementById("edit-server-btn");
+            if (currentServerId !== "general" && allServers[currentServerId] && allServers[currentServerId].owner === currentSession?.username) {
+                editBtn.classList.remove("hidden");
+            } else {
+                editBtn.classList.add("hidden");
+            }
         }
 
         document.getElementById("chat-form").addEventListener("submit", (e) => {
@@ -241,6 +273,22 @@
         function submitServer() {
             const name = document.getElementById("new-server-input").value.trim();
             if (name) socket.emit("create_server", name);
+        }
+
+        function openEditServerModal() {
+            const currentSrv = allServers[currentServerId];
+            if (currentSrv) {
+                document.getElementById("edit-server-input").value = currentSrv.name;
+            }
+            document.getElementById("edit-server-modal").classList.remove("hidden");
+        }
+        function closeEditServerModal() { document.getElementById("edit-server-modal").classList.add("hidden"); }
+        function submitEditServer() {
+            const newName = document.getElementById("edit-server-input").value.trim();
+            if (newName) {
+                socket.emit("update_server", { serverId: currentServerId, newName: newName });
+                closeEditServerModal();
+            }
         }
 
         function escapeHtml(text) {
