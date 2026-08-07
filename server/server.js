@@ -9,7 +9,7 @@ app.use(cors());
 const server = http.createServer(app);
 const io = new Server(server, {
     cors: { origin: "*" },
-    maxHttpBufferSize: 25 * 1024 * 1024 // Increased to 25MB to allow videos and larger files
+    maxHttpBufferSize: 25 * 1024 * 1024 // 25MB limit for files/videos
 });
 
 const ADMIN_USER_ID = "usr_kbyc5yhe2";
@@ -18,7 +18,8 @@ const servers = {
     "general": { 
         name: "General Lobby", 
         owner: "System", 
-        channels: ["main", "random"] 
+        channels: ["main", "random"],
+        stickers: []
     }
 };
 
@@ -64,7 +65,8 @@ io.on("connection", (socket) => {
         socket.emit("server_switched", { 
             serverId, 
             channel: socket.currentChannel, 
-            channels: servers[serverId].channels 
+            channels: servers[serverId].channels,
+            stickers: servers[serverId].stickers || []
         });
 
         if (chatHistories[roomKey]) {
@@ -78,6 +80,7 @@ io.on("connection", (socket) => {
             if (!announcedCustomUsers.has(userKey)) {
                 announcedCustomUsers.add(userKey);
                 io.to(roomKey).emit("message", {
+                    id: "sys_" + Math.random(),
                     system: true,
                     text: `${socket.username} entered the server.`
                 });
@@ -136,7 +139,8 @@ io.on("connection", (socket) => {
         servers[serverId] = { 
             name: serverName, 
             owner: socket.username, 
-            channels: ["main", "general"] 
+            channels: ["main", "general"],
+            stickers: []
         };
 
         io.emit("server_list", servers);
@@ -163,11 +167,26 @@ io.on("connection", (socket) => {
         }
 
         io.emit("server_list", servers);
+    });
+
+    // Handle Custom Server Sticker Uploads (Server Owner Only)
+    socket.on("upload_server_sticker", ({ serverId, stickerUrl }) => {
+        if (!servers[serverId] || !stickerUrl) return;
+        
+        const isGeneralAdmin = (serverId === "general" && socket.userId === ADMIN_USER_ID);
+        const isCustomOwner = (serverId !== "general" && servers[serverId].owner === socket.username);
+
+        if (!isGeneralAdmin && !isCustomOwner) return;
+
+        if (!servers[serverId].stickers) {
+            servers[serverId].stickers = [];
+        }
+
+        servers[serverId].stickers.push(stickerUrl);
+
+        // Broadcast updated stickers to everyone on that server
         servers[serverId].channels.forEach(ch => {
-            io.to(`${serverId}_${ch}`).emit("message", {
-                system: true,
-                text: `Server settings updated by (${socket.username}).`
-            });
+            io.to(`${serverId}_${ch}`).emit("stickers_updated", servers[serverId].stickers);
         });
     });
 
@@ -192,6 +211,7 @@ io.on("connection", (socket) => {
 
         const roomKey = `${socket.currentServer}_${socket.currentChannel}`;
         const msgData = {
+            id: "msg_" + Math.random().toString(36).substr(2, 9),
             username: socket.username,
             text: text,
             fileUrl: fileUrl,
@@ -209,6 +229,22 @@ io.on("connection", (socket) => {
         }
 
         io.to(roomKey).emit("message", msgData);
+    });
+
+    // Handle Message Deletion (Author Only)
+    socket.on("delete_message", (msgId) => {
+        if (!socket.currentServer || !socket.currentChannel) return;
+        const roomKey = `${socket.currentServer}_${socket.currentChannel}`;
+        if (!chatHistories[roomKey]) return;
+
+        const index = chatHistories[roomKey].findIndex(m => m.id === msgId);
+        if (index !== -1) {
+            const msg = chatHistories[roomKey][index];
+            if (msg.username === socket.username) {
+                chatHistories[roomKey].splice(index, 1);
+                io.to(roomKey).emit("message_deleted", msgId);
+            }
+        }
     });
 
     socket.on("disconnect", () => {
