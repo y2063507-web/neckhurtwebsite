@@ -9,7 +9,7 @@ app.use(cors());
 const server = http.createServer(app);
 const io = new Server(server, {
     cors: { origin: "*" },
-    maxHttpBufferSize: 25 * 1024 * 1024 // 25MB limit for files/videos
+    maxHttpBufferSize: 30 * 1024 * 1024 // 30MB limit
 });
 
 const ADMIN_USER_ID = "usr_kbyc5yhe2";
@@ -169,7 +169,6 @@ io.on("connection", (socket) => {
         io.emit("server_list", servers);
     });
 
-    // Handle Custom Server Sticker Uploads (Server Owner Only)
     socket.on("upload_server_sticker", ({ serverId, stickerUrl }) => {
         if (!servers[serverId] || !stickerUrl) return;
         
@@ -184,54 +183,56 @@ io.on("connection", (socket) => {
 
         servers[serverId].stickers.push(stickerUrl);
 
-        // Broadcast updated stickers to everyone on that server
         servers[serverId].channels.forEach(ch => {
             io.to(`${serverId}_${ch}`).emit("stickers_updated", servers[serverId].stickers);
         });
     });
 
-    socket.on("chat_message", (content) => {
+    // Standard Text Messages
+    socket.on("chat_message", (textInput) => {
         if (!socket.currentServer || !socket.currentChannel) return;
-
-        let text = "";
-        let fileUrl = null;
-        let fileName = null;
-        let fileType = null;
-
-        if (typeof content === "string") {
-            text = content.trim();
-        } else if (typeof content === "object" && content !== null) {
-            text = content.text ? content.text.trim() : "";
-            fileUrl = content.fileUrl || null;
-            fileName = content.fileName || null;
-            fileType = content.fileType || null;
-        }
-
-        if (!text && !fileUrl) return;
+        const text = typeof textInput === "string" ? textInput.trim() : "";
+        if (!text) return;
 
         const roomKey = `${socket.currentServer}_${socket.currentChannel}`;
         const msgData = {
             id: "msg_" + Math.random().toString(36).substr(2, 9),
             username: socket.username,
             text: text,
-            fileUrl: fileUrl,
-            fileName: fileName,
-            fileType: fileType,
+            fileUrl: null,
+            fileName: null,
+            fileType: null,
             time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
         };
 
-        if (!chatHistories[roomKey]) {
-            chatHistories[roomKey] = [];
-        }
-        chatHistories[roomKey].push(msgData);
-        if (chatHistories[roomKey].length > MAX_HISTORY) {
-            chatHistories[roomKey].shift();
-        }
-
-        io.to(roomKey).emit("message", msgData);
+        saveAndBroadcastMessage(roomKey, msgData);
     });
 
-    // Handle Message Deletion (Author Only)
+    // High-Performance Binary File + Optional Caption Handler
+    socket.on("upload_file_msg", (data) => {
+        if (!socket.currentServer || !socket.currentChannel) return;
+
+        let fileUrl = null;
+        if (data.file) {
+            // Socket.IO automatically transforms binary blobs into a Node.js Buffer
+            const base64Data = data.file.toString("base64");
+            fileUrl = `data:${data.fileType};base64,${base64Data}`;
+        }
+
+        const roomKey = `${socket.currentServer}_${socket.currentChannel}`;
+        const msgData = {
+            id: "msg_" + Math.random().toString(36).substr(2, 9),
+            username: socket.username,
+            text: data.text ? data.text.trim() : "",
+            fileUrl: fileUrl,
+            fileName: data.fileName || "attachment",
+            fileType: data.fileType || "application/octet-stream",
+            time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        };
+
+        saveAndBroadcastMessage(roomKey, msgData);
+    });
+
     socket.on("delete_message", (msgId) => {
         if (!socket.currentServer || !socket.currentChannel) return;
         const roomKey = `${socket.currentServer}_${socket.currentChannel}`;
@@ -251,6 +252,17 @@ io.on("connection", (socket) => {
         console.log(`User disconnected: ${socket.id}`);
     });
 });
+
+function saveAndBroadcastMessage(roomKey, msgData) {
+    if (!chatHistories[roomKey]) {
+        chatHistories[roomKey] = [];
+    }
+    chatHistories[roomKey].push(msgData);
+    if (chatHistories[roomKey].length > MAX_HISTORY) {
+        chatHistories[roomKey].shift();
+    }
+    io.to(roomKey).emit("message", msgData);
+}
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
