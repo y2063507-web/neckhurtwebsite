@@ -189,7 +189,7 @@
         let currentChannel = "main";
         let allServers = { "general": { name: "General Lobby", owner: "System", channels: ["main", "random"], stickers: [] } };
         let currentServerStickers = [];
-        let pendingAttachment = null; // Holds the file staging area
+        let pendingFile = null; // Stores direct File reference for zero-lag binary upload
 
         window.addEventListener("DOMContentLoaded", () => {
             const saved = localStorage.getItem("pnig_session");
@@ -321,52 +321,44 @@
             toggleStickerDrawer();
         }
 
-        // Discord-style file staging handler (Preview instead of instant auto-send)
+        // Lightning-fast staging using URL.createObjectURL (0ms delay, no blocking FileReader)
         document.getElementById("file-input").addEventListener("change", (e) => {
             const file = e.target.files[0];
             if (!file) return;
 
-            if (file.size > 25 * 1024 * 1024) {
-                alert("File is too large! Please choose a file under 25MB.");
+            if (file.size > 30 * 1024 * 1024) {
+                alert("File is too large! Please choose a file under 30MB.");
                 e.target.value = "";
                 return;
             }
 
-            const reader = new FileReader();
-            reader.onload = (uploadEvent) => {
-                pendingAttachment = {
-                    fileUrl: uploadEvent.target.result,
-                    fileName: file.name,
-                    fileType: file.type
-                };
+            pendingFile = file; // Store raw file reference
 
-                // Show preview box
-                const previewBox = document.getElementById("attachment-preview-box");
-                const thumbnail = document.getElementById("preview-thumbnail");
-                document.getElementById("preview-filename").innerText = file.name;
+            const previewBox = document.getElementById("attachment-preview-box");
+            const thumbnail = document.getElementById("preview-thumbnail");
+            document.getElementById("preview-filename").innerText = file.name;
 
-                if (file.type.startsWith("image/")) {
-                    thumbnail.innerHTML = `<img src="${uploadEvent.target.result}" class="w-full h-full object-cover">`;
-                } else if (file.type.startsWith("video/")) {
-                    thumbnail.innerHTML = `🎥`;
-                } else {
-                    thumbnail.innerHTML = `📦`;
-                }
+            const objectUrl = URL.createObjectURL(file);
 
-                previewBox.classList.remove("hidden");
-                document.getElementById("message-input").focus();
-                e.target.value = "";
-            };
-            reader.readAsDataURL(file);
+            if (file.type.startsWith("image/")) {
+                thumbnail.innerHTML = `<img src="${objectUrl}" class="w-full h-full object-cover">`;
+            } else if (file.type.startsWith("video/")) {
+                thumbnail.innerHTML = `🎥`;
+            } else {
+                thumbnail.innerHTML = `📦`;
+            }
+
+            previewBox.classList.remove("hidden");
+            document.getElementById("message-input").focus();
+            e.target.value = "";
         });
 
         function clearAttachment() {
-            pendingAttachment = null;
+            pendingFile = null;
             document.getElementById("attachment-preview-box").classList.add("hidden");
             document.getElementById("file-input").value = "";
         }
 
-        // Upload custom server sticker
         document.getElementById("sticker-upload-input").addEventListener("change", (e) => {
             const file = e.target.files[0];
             if (!file) return;
@@ -440,20 +432,20 @@
             socket.emit("delete_message", msgId);
         }
 
-        // Submitting chat form now sends text + pending attachment together
+        // Submitting sends text + direct binary file over socket.io seamlessly
         document.getElementById("chat-form").addEventListener("submit", (e) => {
             e.preventDefault();
             const input = document.getElementById("message-input");
             const text = input.value.trim();
 
-            if (!text && !pendingAttachment) return; // Nothing to send
+            if (!text && !pendingFile) return;
 
-            if (pendingAttachment) {
-                socket.emit("chat_message", {
+            if (pendingFile) {
+                socket.emit("upload_file_msg", {
                     text: text,
-                    fileUrl: pendingAttachment.fileUrl,
-                    fileName: pendingAttachment.fileName,
-                    fileType: pendingAttachment.fileType
+                    file: pendingFile, // Socket.IO streams this raw binary chunk instantly
+                    fileName: pendingFile.name,
+                    fileType: pendingFile.type
                 });
                 clearAttachment();
             } else {
