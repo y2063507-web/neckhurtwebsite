@@ -16,6 +16,9 @@ const servers = {
     "general": { name: "General Lobby", owner: "System" }
 };
 
+// Track users who have already been announced on custom servers to avoid repeat spam
+const announcedCustomUsers = new Set();
+
 io.on("connection", (socket) => {
     console.log(`User connected: ${socket.id}`);
 
@@ -24,17 +27,12 @@ io.on("connection", (socket) => {
         socket.username = sessionData.username;
         socket.userId = sessionData.userId;
         
-        // Default join to general lobby
+        // Default join to general lobby (silently, no spam message)
         socket.join("general");
         socket.currentServer = "general";
         
         // Send list of available servers to the user
         socket.emit("server_list", servers);
-        
-        io.to("general").emit("message", {
-            system: true,
-            text: `${socket.username} joined the general lobby.`
-        });
     });
 
     // Handle switching or joining custom servers
@@ -46,10 +44,18 @@ io.on("connection", (socket) => {
         socket.currentServer = serverId;
 
         socket.emit("server_switched", serverId);
-        io.to(serverId).emit("message", {
-            system: true,
-            text: `${socket.username} entered the server.`
-        });
+
+        // Only announce on custom servers, and make sure it appears ONLY ONCE
+        if (serverId !== "general" && socket.username) {
+            const userKey = `${serverId}-${socket.username}`;
+            if (!announcedCustomUsers.has(userKey)) {
+                announcedCustomUsers.add(userKey);
+                io.to(serverId).emit("message", {
+                    system: true,
+                    text: `${socket.username} entered the server.`
+                });
+            }
+        }
     });
 
     // Handle creation of a new custom server
@@ -64,6 +70,34 @@ io.on("connection", (socket) => {
         socket.emit("server_created_success", serverId);
     });
 
+    // Handle server customization (Owner only)
+    socket.on("update_server", ({ serverId, newName }) => {
+        if (!servers[serverId]) return;
+
+        // Verify that the user sending the request is actually the owner of the server
+        if (servers[serverId].owner !== socket.username) {
+            socket.emit("message", {
+                system: true,
+                text: "Permission denied: Only the server owner can customize this server."
+            });
+            return;
+        }
+
+        // Update properties if provided
+        if (newName && newName.trim()) {
+            servers[serverId].name = newName.trim();
+        }
+
+        // Broadcast updated server list to everyone so titles/settings refresh instantly
+        io.emit("server_list", servers);
+
+        // Notify the specific server room
+        io.to(serverId).emit("message", {
+            system: true,
+            text: `Server settings were updated by owner (${socket.username}).`
+        });
+    });
+
     // Handle incoming chat messages within the current server room
     socket.on("chat_message", (text) => {
         if (!socket.currentServer || !text.trim()) return;
@@ -76,12 +110,8 @@ io.on("connection", (socket) => {
     });
 
     socket.on("disconnect", () => {
-        if (socket.username && socket.currentServer) {
-            io.to(socket.currentServer).emit("message", {
-                system: true,
-                text: `${socket.username} left.`
-            });
-        }
+        console.log(`User disconnected: ${socket.id}`);
+        // Disconnect leave notifications are removed entirely to prevent chat clutter
     });
 });
 
