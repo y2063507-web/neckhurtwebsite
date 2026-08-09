@@ -2,6 +2,7 @@ const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
 const cors = require("cors");
+const { Pool } = require("pg");
 
 const app = express();
 app.use(cors());
@@ -11,6 +12,27 @@ const io = new Server(server, {
     cors: { origin: "*" },
     maxHttpBufferSize: 30 * 1024 * 1024 // 30MB limit
 });
+
+// Setup PostgreSQL Cloud Database Connection
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false }
+});
+
+// Automatically create tables on startup if they don't exist
+pool.query(`
+    CREATE TABLE IF NOT EXISTS messages (
+        id VARCHAR(50) PRIMARY KEY,
+        username VARCHAR(100),
+        text TEXT,
+        file_url TEXT,
+        file_name TEXT,
+        file_type TEXT,
+        channel VARCHAR(50),
+        server_id VARCHAR(50),
+        time VARCHAR(50)
+    )
+`).catch(err => console.error("Database initialization error:", err));
 
 const ADMIN_USER_ID = "usr_kbyc5yhe2";
 
@@ -23,14 +45,12 @@ const servers = {
     }
 };
 
-const chatHistories = {};
-const MAX_HISTORY = 50;
 const announcedCustomUsers = new Set();
 
 io.on("connection", (socket) => {
     console.log(`User connected: ${socket.id}`);
 
-    socket.on("auth_user", (sessionData) => {
+    socket.on("auth_user", async (sessionData) => {
         socket.username = sessionData.username;
         socket.userId = sessionData.userId;
         
@@ -42,14 +62,19 @@ io.on("connection", (socket) => {
         
         socket.emit("server_list", servers);
 
-        if (chatHistories[roomKey]) {
-            socket.emit("load_history", chatHistories[roomKey]);
-        } else {
+        try {
+            const result = await pool.query(
+                `SELECT id, username, text, file_url as "fileUrl", file_name as "fileName", file_type as "fileType", time FROM messages WHERE server_id = $1 AND channel = $2 ORDER BY ctid ASC LIMIT 50`,
+                ["general", "main"]
+            );
+            socket.emit("load_history", result.rows);
+        } catch (err) {
+            console.error("Error loading history:", err);
             socket.emit("load_history", []);
         }
     });
 
-    socket.on("join_server", (serverId) => {
+    socket.on("join_server", async (serverId) => {
         if (!servers[serverId]) return;
 
         if (socket.currentServer && socket.currentChannel) {
@@ -69,9 +94,14 @@ io.on("connection", (socket) => {
             stickers: servers[serverId].stickers || []
         });
 
-        if (chatHistories[roomKey]) {
-            socket.emit("load_history", chatHistories[roomKey]);
-        } else {
+        try {
+            const result = await pool.query(
+                `SELECT id, username, text, file_url as "fileUrl", file_name as "fileName", file_type as "fileType", time FROM messages WHERE server_id = $1 AND channel = $2 ORDER BY ctid ASC LIMIT 50`,
+                [socket.currentServer, socket.currentChannel]
+            );
+            socket.emit("load_history", result.rows);
+        } catch (err) {
+            console.error("Error loading history:", err);
             socket.emit("load_history", []);
         }
 
@@ -88,7 +118,7 @@ io.on("connection", (socket) => {
         }
     });
 
-    socket.on("join_channel", (channelName) => {
+    socket.on("join_channel", async (channelName) => {
         if (!servers[socket.currentServer]) return;
         if (!servers[socket.currentServer].channels.includes(channelName)) return;
 
@@ -100,9 +130,14 @@ io.on("connection", (socket) => {
 
         socket.emit("channel_switched", channelName);
 
-        if (chatHistories[roomKey]) {
-            socket.emit("load_history", chatHistories[roomKey]);
-        } else {
+        try {
+            const result = await pool.query(
+                `SELECT id, username, text, file_url as "fileUrl", file_name as "fileName", file_type as "fileType", time FROM messages WHERE server_id = $1 AND channel = $2 ORDER BY ctid ASC LIMIT 50`,
+                [socket.currentServer, socket.currentChannel]
+            );
+            socket.emit("load_history", result.rows);
+        } catch (err) {
+            console.error("Error loading history:", err);
             socket.emit("load_history", []);
         }
     });
@@ -194,7 +229,7 @@ io.on("connection", (socket) => {
     });
 
     // Standard Text Messages
-    socket.on("chat_message", (textInput) => {
+    socket.on("chat_message", async (textInput) => {
         if (!socket.currentServer || !socket.currentChannel) return;
         const text = typeof textInput === "string" ? textInput.trim() : "";
         if (!text) return;
@@ -210,11 +245,11 @@ io.on("connection", (socket) => {
             time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
         };
 
-        saveAndBroadcastMessage(roomKey, msgData);
+        await saveAndBroadcastMessage(roomKey, socket.currentServer, socket.currentChannel, msgData);
     });
 
     // High-Performance Binary File + Optional Caption Handler
-    socket.on("upload_file_msg", (data) => {
+    socket.on("upload_file_msg", async (data) => {
         if (!socket.currentServer || !socket.currentChannel) return;
 
         let fileUrl = null;
@@ -234,21 +269,21 @@ io.on("connection", (socket) => {
             time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
         };
 
-        saveAndBroadcastMessage(roomKey, msgData);
+        await saveAndBroadcastMessage(roomKey, socket.currentServer, socket.currentChannel, msgData);
     });
 
-    socket.on("delete_message", (msgId) => {
+    socket.on("delete_message", async (msgId) => {
         if (!socket.currentServer || !socket.currentChannel) return;
         const roomKey = `${socket.currentServer}_${socket.currentChannel}`;
-        if (!chatHistories[roomKey]) return;
 
-        const index = chatHistories[roomKey].findIndex(m => m.id === msgId);
-        if (index !== -1) {
-            const msg = chatHistories[roomKey][index];
-            if (msg.username === socket.username) {
-                chatHistories[roomKey].splice(index, 1);
+        try {
+            const checkRes = await pool.query(`SELECT username FROM messages WHERE id = $1`, [msgId]);
+            if (checkRes.rows.length > 0 && checkRes.rows[0].username === socket.username) {
+                await pool.query(`DELETE FROM messages WHERE id = $1`, [msgId]);
                 io.to(roomKey).emit("message_deleted", msgId);
             }
+        } catch (err) {
+            console.error("Error deleting message:", err);
         }
     });
 
@@ -257,15 +292,16 @@ io.on("connection", (socket) => {
     });
 });
 
-function saveAndBroadcastMessage(roomKey, msgData) {
-    if (!chatHistories[roomKey]) {
-        chatHistories[roomKey] = [];
+async function saveAndBroadcastMessage(roomKey, serverId, channel, msgData) {
+    try {
+        await pool.query(
+            `INSERT INTO messages (id, username, text, file_url, file_name, file_type, channel, server_id, time) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+            [msgData.id, msgData.username, msgData.text, msgData.fileUrl, msgData.fileName, msgData.fileType, channel, serverId, msgData.time]
+        );
+        io.to(roomKey).emit("message", msgData);
+    } catch (err) {
+        console.error("Error saving message to database:", err);
     }
-    chatHistories[roomKey].push(msgData);
-    if (chatHistories[roomKey].length > MAX_HISTORY) {
-        chatHistories[roomKey].shift();
-    }
-    io.to(roomKey).emit("message", msgData);
 }
 
 const PORT = process.env.PORT || 3000;
