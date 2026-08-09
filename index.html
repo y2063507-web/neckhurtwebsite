@@ -168,12 +168,27 @@
     </div>
 
     <div id="edit-server-modal" class="hidden fixed inset-0 bg-black/80 flex items-center justify-center p-4">
-        <div class="bg-panel border border-gray-800 p-6 rounded-2xl w-full max-w-sm">
-            <h3 class="font-bold text-lg mb-4 text-gray-100">Customize Server</h3>
-            <input id="edit-server-input" type="text" placeholder="New Server Name" class="w-full bg-darkbg border border-gray-700 rounded-lg px-4 py-2 text-sm mb-4 focus:outline-none focus:border-accent text-gray-200">
-            <div class="flex justify-end gap-2">
-                <button onclick="closeEditServerModal()" class="px-4 py-2 text-sm text-gray-400 hover:text-gray-200">Cancel</button>
-                <button onclick="submitEditServer()" class="bg-accent text-darkbg font-bold px-4 py-2 rounded-lg text-sm">Save</button>
+        <div class="bg-panel border border-gray-800 p-6 rounded-2xl w-full max-w-md space-y-4">
+            <h3 class="font-bold text-lg text-gray-100">Customize Server</h3>
+            <div>
+                <label class="text-xs uppercase font-semibold text-gray-500 mb-1 block">Server Name</label>
+                <input id="edit-server-input" type="text" placeholder="New Server Name" class="w-full bg-darkbg border border-gray-700 rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-accent text-gray-200">
+            </div>
+            
+            <div id="invite-section">
+                <label class="text-xs uppercase font-semibold text-gray-500 mb-1 block">Invite Link</label>
+                <div class="flex gap-2">
+                    <input id="invite-link-input" type="text" readonly class="flex-1 bg-darkbg border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-gray-400 focus:outline-none">
+                    <button onclick="copyInviteLink()" class="bg-gray-800 border border-gray-700 text-gray-300 font-semibold px-3 py-1.5 rounded-lg text-xs hover:bg-gray-700 transition">Copy</button>
+                </div>
+            </div>
+
+            <div class="flex justify-between items-center pt-2 border-t border-gray-800">
+                <button id="delete-server-btn" onclick="confirmDeleteServer()" class="hidden bg-red-500/10 border border-red-500/30 text-red-400 hover:bg-red-500 hover:text-white px-3 py-2 rounded-lg text-xs font-semibold transition">Delete Server</button>
+                <div class="flex gap-2 ml-auto">
+                    <button onclick="closeEditServerModal()" class="px-4 py-2 text-sm text-gray-400 hover:text-gray-200">Cancel</button>
+                    <button onclick="submitEditServer()" class="bg-accent text-darkbg font-bold px-4 py-2 rounded-lg text-sm">Save</button>
+                </div>
             </div>
         </div>
     </div>
@@ -189,6 +204,7 @@
         let currentChannel = "main";
         let allServers = { "general": { name: "General Lobby", owner: "System", channels: ["main", "random"], stickers: [] } };
         let currentServerStickers = [];
+        let currentInviteCode = "";
         let pendingFile = null;
 
         window.addEventListener("DOMContentLoaded", () => {
@@ -242,6 +258,13 @@
 
             socket.on("connect", () => {
                 socket.emit("auth_user", session);
+
+                // Handle URL invite code lookup automatically on connection
+                const urlParams = new URLSearchParams(window.location.search);
+                const inviteCode = urlParams.get("invite");
+                if (inviteCode) {
+                    socket.emit("join_server_by_invite", inviteCode);
+                }
             });
 
             socket.on("server_list", (servers) => {
@@ -255,9 +278,14 @@
                 currentServerId = data.serverId;
                 currentChannel = data.channel;
                 currentServerStickers = data.stickers || [];
+                currentInviteCode = data.inviteCode || "";
                 renderChannels(data.channels);
                 renderStickerDrawer(currentServerStickers);
                 updateEditButtonVisibility();
+            });
+
+            socket.on("force_switch_server", (targetServerId) => {
+                switchServer(targetServerId);
             });
 
             socket.on("channel_switched", (channelName) => {
@@ -321,7 +349,6 @@
             toggleStickerDrawer();
         }
 
-        // Lightning-fast file staging using URL.createObjectURL (0ms delay)
         document.getElementById("file-input").addEventListener("change", (e) => {
             const file = e.target.files[0];
             if (!file) return;
@@ -359,7 +386,6 @@
             document.getElementById("file-input").value = "";
         }
 
-        // Lightning-fast sticker staging using raw binary streams (0ms lag)
         document.getElementById("sticker-upload-input").addEventListener("change", (e) => {
             const file = e.target.files[0];
             if (!file) return;
@@ -473,28 +499,48 @@
         function renderChannels(channels) {
             const list = document.getElementById("channel-list");
             list.innerHTML = "";
+            const isGeneralAdmin = (currentServerId === "general" && currentSession?.userId === ADMIN_USER_ID);
+            const isCustomOwner = (currentServerId !== "general" && allServers[currentServerId] && allServers[currentServerId].owner === currentSession?.username);
+
             channels.forEach(ch => {
-                const btn = document.createElement("button");
+                const itemDiv = document.createElement("div");
                 const isActive = ch === currentChannel;
-                btn.className = `w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition ${isActive ? 'bg-gray-800 text-accent' : 'text-gray-400 hover:bg-gray-850 hover:text-gray-200'}`;
+                itemDiv.className = `w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm font-medium transition ${isActive ? 'bg-gray-800 text-accent' : 'text-gray-400 hover:bg-gray-850 hover:text-gray-200'}`;
+                
+                const btn = document.createElement("button");
+                btn.className = "text-left flex-1 truncate";
                 btn.innerText = "# " + ch;
                 btn.onclick = () => {
                     if (currentChannel !== ch) socket.emit("join_channel", ch);
                 };
-                list.appendChild(btn);
+                itemDiv.appendChild(btn);
+
+                if ((isGeneralAdmin || isCustomOwner) && ch !== "main") {
+                    const renameBtn = document.createElement("button");
+                    renameBtn.className = "text-xs text-gray-500 hover:text-white ml-2 px-1";
+                    renameBtn.innerText = "✏️";
+                    renameBtn.title = "Rename Channel";
+                    renameBtn.onclick = (e) => {
+                        e.stopPropagation();
+                        promptRenameChannel(ch);
+                    };
+                    itemDiv.appendChild(renameBtn);
+                }
+
+                list.appendChild(itemDiv);
             });
             document.getElementById("current-channel-title").innerText = "# " + currentChannel;
         }
 
+        function promptRenameChannel(oldName) {
+            const newName = prompt(`Rename channel #${oldName} to:`, oldName);
+            if (newName && newName.trim() !== "") {
+                socket.emit("rename_channel", { oldName: oldName, newName: newName.trim() });
+            }
+        }
+
         function highlightActiveChannel(activeCh) {
-            const buttons = document.querySelectorAll("#channel-list button");
-            buttons.forEach(btn => {
-                if (btn.innerText === "# " + activeCh) {
-                    btn.className = "w-full text-left px-3 py-2 rounded-lg text-sm font-medium bg-gray-800 text-accent transition";
-                } else {
-                    btn.className = "w-full text-left px-3 py-2 rounded-lg text-sm font-medium text-gray-400 hover:bg-gray-850 hover:text-gray-200 transition";
-                }
-            });
+            renderChannels(allServers[currentServerId]?.channels || [activeCh]);
         }
 
         function switchServer(id, name = "General Lobby") {
@@ -520,6 +566,22 @@
                 editBtn.classList.add("hidden");
                 if (channelAddBtn) channelAddBtn.classList.add("hidden");
                 if (stickerUploadBtn) stickerUploadBtn.classList.add("hidden");
+            }
+        }
+
+        function copyInviteLink() {
+            const inviteLink = `${window.location.origin}${window.location.pathname}?invite=${currentInviteCode}`;
+            navigator.clipboard.writeText(inviteLink).then(() => {
+                alert("Invite link copied to clipboard!");
+            });
+        }
+
+        function confirmDeleteServer() {
+            const currentSrv = allServers[currentServerId];
+            if (!currentSrv) return;
+            if (confirm(`Are you sure you want to permanently delete "${currentSrv.name}"? This action cannot be undone.`)) {
+                socket.emit("delete_server", currentServerId);
+                closeEditServerModal();
             }
         }
 
@@ -559,7 +621,18 @@
 
         function openEditServerModal() {
             const currentSrv = allServers[currentServerId];
-            if (currentSrv) document.getElementById("edit-server-input").value = currentSrv.name;
+            if (currentSrv) {
+                document.getElementById("edit-server-input").value = currentSrv.name;
+                document.getElementById("invite-link-input").value = `${window.location.origin}${window.location.pathname}?invite=${currentInviteCode}`;
+            }
+
+            const deleteBtn = document.getElementById("delete-server-btn");
+            if (currentServerId !== "general") {
+                deleteBtn.classList.remove("hidden");
+            } else {
+                deleteBtn.classList.add("hidden");
+            }
+
             document.getElementById("edit-server-modal").classList.remove("hidden");
         }
         function closeEditServerModal() { document.getElementById("edit-server-modal").classList.add("hidden"); }
