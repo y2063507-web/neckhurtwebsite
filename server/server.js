@@ -31,19 +31,50 @@ pool.query(`
         channel VARCHAR(50),
         server_id VARCHAR(50),
         time VARCHAR(50)
-    )
+    );
+
+    CREATE TABLE IF NOT EXISTS servers (
+        id VARCHAR(50) PRIMARY KEY,
+        name VARCHAR(100),
+        owner VARCHAR(100),
+        channels TEXT[],
+        stickers TEXT[],
+        invite_code VARCHAR(50) UNIQUE
+    );
 `).catch(err => console.error("Database initialization error:", err));
 
 const ADMIN_USER_ID = "usr_kbyc5yhe2";
 
-const servers = {
-    "general": { 
-        name: "General Lobby", 
-        owner: "System", 
-        channels: ["main", "random"],
-        stickers: []
+// In-memory cache for servers, loaded from DB on startup
+const servers = {};
+
+async function loadServersIntoMemory() {
+    try {
+        const result = await pool.query(`SELECT * FROM servers`);
+        if (result.rows.length === 0) {
+            // Default General Lobby setup if database is brand new
+            await pool.query(
+                `INSERT INTO servers (id, name, owner, channels, stickers, invite_code) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (id) DO NOTHING`,
+                ["general", "General Lobby", "System", ["main", "random"], [], "general-lobby"]
+            );
+            servers["general"] = { name: "General Lobby", owner: "System", channels: ["main", "random"], stickers: [], invite_code: "general-lobby" };
+        } else {
+            result.rows.forEach(row => {
+                servers[row.id] = {
+                    name: row.name,
+                    owner: row.owner,
+                    channels: row.channels,
+                    stickers: row.stickers || [],
+                    invite_code: row.invite_code || row.id
+                };
+            });
+        }
+    } catch (err) {
+        console.error("Error loading servers:", err);
+        servers["general"] = { name: "General Lobby", owner: "System", channels: ["main", "random"], stickers: [], invite_code: "general-lobby" };
     }
-};
+}
+loadServersIntoMemory();
 
 const announcedCustomUsers = new Set();
 
@@ -91,7 +122,8 @@ io.on("connection", (socket) => {
             serverId, 
             channel: socket.currentChannel, 
             channels: servers[serverId].channels,
-            stickers: servers[serverId].stickers || []
+            stickers: servers[serverId].stickers || [],
+            inviteCode: servers[serverId].invite_code
         });
 
         try {
@@ -118,6 +150,24 @@ io.on("connection", (socket) => {
         }
     });
 
+    // Join Server via Invite Code
+    socket.on("join_server_by_invite", async (inviteCode) => {
+        let targetServerId = null;
+        for (const [sId, sData] of Object.entries(servers)) {
+            if (sData.invite_code === inviteCode) {
+                targetServerId = sId;
+                break;
+            }
+        }
+
+        if (!targetServerId) {
+            socket.emit("message", { system: true, text: "Invalid invite code or server no longer exists." });
+            return;
+        }
+
+        socket.emit("force_switch_server", targetServerId);
+    });
+
     socket.on("join_channel", async (channelName) => {
         if (!servers[socket.currentServer]) return;
         if (!servers[socket.currentServer].channels.includes(channelName)) return;
@@ -142,7 +192,7 @@ io.on("connection", (socket) => {
         }
     });
 
-    socket.on("create_channel", (channelName) => {
+    socket.on("create_channel", async (channelName) => {
         const cleanName = channelName.toLowerCase().replace(/[^a-z0-9-_]/g, '-').trim();
         if (!cleanName || !servers[socket.currentServer]) return;
 
@@ -162,6 +212,13 @@ io.on("connection", (socket) => {
 
         if (!srv.channels.includes(cleanName)) {
             srv.channels.push(cleanName);
+            
+            try {
+                await pool.query(`UPDATE servers SET channels = $1 WHERE id = $2`, [srv.channels, socket.currentServer]);
+            } catch (err) {
+                console.error("Error updating channels in DB:", err);
+            }
+
             io.emit("server_list", servers);
             srv.channels.forEach(ch => {
                 io.to(`${socket.currentServer}_${ch}`).emit("channels_updated", srv.channels);
@@ -169,20 +226,84 @@ io.on("connection", (socket) => {
         }
     });
 
-    socket.on("create_server", (serverName) => {
+    // Rename Channel Handler
+    socket.on("rename_channel", async ({ oldName, newName }) => {
+        const srv = servers[socket.currentServer];
+        if (!srv || oldName === "main") return; // Keep "main" protected if needed
+
+        const cleanNewName = newName.toLowerCase().replace(/[^a-z0-9-_]/g, '-').trim();
+        if (!cleanNewName || srv.channels.includes(cleanNewName)) return;
+
+        if (socket.currentServer === "general" && socket.userId !== ADMIN_USER_ID) return;
+        if (socket.currentServer !== "general" && srv.owner !== socket.username) return;
+
+        const index = srv.channels.indexOf(oldName);
+        if (index !== -1) {
+            srv.channels[index] = cleanNewName;
+
+            try {
+                await pool.query(`UPDATE servers SET channels = $1 WHERE id = $2`, [srv.channels, socket.currentServer]);
+                // Update messages channel tag so history is preserved under new name
+                await pool.query(`UPDATE messages SET channel = $1 WHERE server_id = $2 AND channel = $3`, [cleanNewName, socket.currentServer, oldName]);
+            } catch (err) {
+                console.error("Error renaming channel in DB:", err);
+            }
+
+            io.emit("server_list", servers);
+            srv.channels.forEach(ch => {
+                io.to(`${socket.currentServer}_${ch}`).emit("channels_updated", srv.channels);
+            });
+        }
+    });
+
+    socket.on("create_server", async (serverName) => {
         const serverId = "srv_" + Math.random().toString(36).substr(2, 6);
+        const inviteCode = Math.random().toString(36).substr(2, 8);
+        const defaultChannels = ["main", "general"];
+        const defaultStickers = [];
+
         servers[serverId] = { 
             name: serverName, 
             owner: socket.username, 
-            channels: ["main", "general"],
-            stickers: []
+            channels: defaultChannels,
+            stickers: defaultStickers,
+            invite_code: inviteCode
         };
+
+        try {
+            await pool.query(
+                `INSERT INTO servers (id, name, owner, channels, stickers, invite_code) VALUES ($1, $2, $3, $4, $5, $6)`,
+                [serverId, serverName, socket.username, defaultChannels, defaultStickers, inviteCode]
+            );
+        } catch (err) {
+            console.error("Error saving new server:", err);
+        }
 
         io.emit("server_list", servers);
         socket.emit("server_created_success", serverId);
     });
 
-    socket.on("update_server", ({ serverId, newName }) => {
+    // Delete Custom Server Handler
+    socket.on("delete_server", async (serverId) => {
+        if (serverId === "general" || !servers[serverId]) return;
+        if (servers[serverId].owner !== socket.username) {
+            socket.emit("message", { system: true, text: "Permission denied: Only the server owner can delete this server." });
+            return;
+        }
+
+        try {
+            await pool.query(`DELETE FROM servers WHERE id = $1`, [serverId]);
+            await pool.query(`DELETE FROM messages WHERE server_id = $1`, [serverId]);
+        } catch (err) {
+            console.error("Error deleting server from DB:", err);
+        }
+
+        delete servers[serverId];
+        io.emit("server_list", servers);
+        socket.emit("force_switch_server", "general");
+    });
+
+    socket.on("update_server", async ({ serverId, newName }) => {
         if (!servers[serverId]) return;
 
         if (serverId === "general") {
@@ -199,13 +320,18 @@ io.on("connection", (socket) => {
 
         if (newName && newName.trim()) {
             servers[serverId].name = newName.trim();
+            try {
+                await pool.query(`UPDATE servers SET name = $1 WHERE id = $2`, [servers[serverId].name, serverId]);
+            } catch (err) {
+                console.error("Error updating server name in DB:", err);
+            }
         }
 
         io.emit("server_list", servers);
     });
 
     // High-Performance Binary Sticker Upload Handler
-    socket.on("upload_server_sticker_binary", (data) => {
+    socket.on("upload_server_sticker_binary", async (data) => {
         const serverId = data.serverId;
         if (!servers[serverId] || !data.file) return;
         
@@ -222,6 +348,12 @@ io.on("connection", (socket) => {
         }
 
         servers[serverId].stickers.push(stickerUrl);
+
+        try {
+            await pool.query(`UPDATE servers SET stickers = $1 WHERE id = $2`, [servers[serverId].stickers, serverId]);
+        } catch (err) {
+            console.error("Error updating stickers in DB:", err);
+        }
 
         servers[serverId].channels.forEach(ch => {
             io.to(`${serverId}_${ch}`).emit("stickers_updated", servers[serverId].stickers);
