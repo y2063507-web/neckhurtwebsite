@@ -1,7 +1,6 @@
+const http = require("http");
 const express = require("express");
-const http = require("http"); 
 const { Server } = require("socket.io");
-const cors = require("cors");
 const { Pool } = require("pg");
 
 const app = express();
@@ -17,31 +16,42 @@ const pool = new Pool({
     ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
 });
 
-// Automatically ensure tables and columns exist on startup
-pool.query(`
-    CREATE TABLE IF NOT EXISTS servers (
-        id TEXT PRIMARY KEY,
-        name TEXT,
-        owner TEXT,
-        channels TEXT[],
-        stickers TEXT[],
-        invite_code TEXT,
-        members JSONB DEFAULT '[]'::jsonb
-    );
-    ALTER TABLE servers ADD COLUMN IF NOT EXISTS members JSONB DEFAULT '[]'::jsonb;
-
-    CREATE TABLE IF NOT EXISTS messages (
-        id TEXT PRIMARY KEY,
-        server_id TEXT,
-        channel TEXT,
-        username TEXT,
-        text TEXT,
-        file_url TEXT,
-        file_name TEXT,
-        file_type TEXT,
-        time TEXT
-    );
-`).catch(err => console.error("Database initialization error:", err));
+// Automatically ensure tables and columns exist on startup (Split for node-postgres compatibility)
+async function initializeDatabase() {
+    try {
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS servers (
+                id TEXT PRIMARY KEY,
+                name TEXT,
+                owner TEXT,
+                channels TEXT[],
+                stickers TEXT[],
+                invite_code TEXT,
+                members JSONB DEFAULT '[]'::jsonb
+            );
+        `);
+        await pool.query(`
+            ALTER TABLE servers ADD COLUMN IF NOT EXISTS members JSONB DEFAULT '[]'::jsonb;
+        `);
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS messages (
+                id TEXT PRIMARY KEY,
+                server_id TEXT,
+                channel TEXT,
+                username TEXT,
+                text TEXT,
+                file_url TEXT,
+                file_name TEXT,
+                file_type TEXT,
+                time TEXT
+            );
+        `);
+        console.log("Database initialized successfully.");
+    } catch (err) {
+        console.error("Database initialization error:", err);
+    }
+}
+initializeDatabase();
 
 app.use(express.json());
 
@@ -203,12 +213,13 @@ io.on("connection", (socket) => {
             
             if (!channels.includes(channelName)) {
                 channels.push(channelName);
-                if (serverId === "general") {
-                    // Update general channels cache or handle accordingly
-                } else {
+                if (serverId !== "general") {
                     await pool.query("UPDATE servers SET channels = $1 WHERE id = $2", [channels, serverId]);
                 }
-                io.to(`${serverId}_${channels[0]}`).emit("channels_updated", channels);
+                // Broadcast to all channels in this server so everyone sees the update
+                channels.forEach(c => {
+                    io.to(`${serverId}_${c}`).emit("channels_updated", channels);
+                });
             }
         } catch (err) {
             console.error("Error creating channel:", err);
@@ -229,7 +240,10 @@ io.on("connection", (socket) => {
                 let channels = srv.channels || ["main", "random"];
                 channels = channels.map(c => c === data.oldName ? data.newName : c);
                 await pool.query("UPDATE servers SET channels = $1 WHERE id = $2", [channels, serverId]);
-                io.to(`${serverId}_${channels[0]}`).emit("channels_updated", channels);
+                
+                channels.forEach(c => {
+                    io.to(`${serverId}_${c}`).emit("channels_updated", channels);
+                });
             }
         } catch (err) {
             console.error("Error renaming channel:", err);
