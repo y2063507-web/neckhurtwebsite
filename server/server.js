@@ -1,5 +1,5 @@
 const express = require("express");
-const http = require("http");
+const http = http = require("http"); // or just require("http")
 const { Server } = require("socket.io");
 const cors = require("cors");
 const { Pool } = require("pg");
@@ -39,7 +39,9 @@ pool.query(`
         owner VARCHAR(100),
         channels TEXT[],
         stickers TEXT[],
-        invite_code VARCHAR(50) UNIQUE
+        invite_code VARCHAR(50) UNIQUE,
+        members TEXT[] DEFAULT '{}',
+        banned_users TEXT[] DEFAULT '{}'
     );
 `).catch(err => console.error("Database initialization error:", err));
 
@@ -54,10 +56,18 @@ async function loadServersIntoMemory() {
         if (result.rows.length === 0) {
             // Default General Lobby setup if database is brand new
             await pool.query(
-                `INSERT INTO servers (id, name, owner, channels, stickers, invite_code) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (id) DO NOTHING`,
-                ["general", "General Lobby", "System", ["main", "random"], [], "general-lobby"]
+                `INSERT INTO servers (id, name, owner, channels, stickers, invite_code, members, banned_users) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (id) DO NOTHING`,
+                ["general", "General Lobby", "System", ["main", "random"], [], "general-lobby", [], []]
             );
-            servers["general"] = { name: "General Lobby", owner: "System", channels: ["main", "random"], stickers: [], invite_code: "general-lobby" };
+            servers["general"] = { 
+                name: "General Lobby", 
+                owner: "System", 
+                channels: ["main", "random"], 
+                stickers: [], 
+                invite_code: "general-lobby",
+                members: [],
+                bannedUsers: []
+            };
         } else {
             result.rows.forEach(row => {
                 servers[row.id] = {
@@ -65,13 +75,15 @@ async function loadServersIntoMemory() {
                     owner: row.owner,
                     channels: row.channels,
                     stickers: row.stickers || [],
-                    invite_code: row.invite_code || row.id
+                    invite_code: row.invite_code || row.id,
+                    members: row.members || [],
+                    bannedUsers: row.banned_users || []
                 };
             });
         }
     } catch (err) {
         console.error("Error loading servers:", err);
-        servers["general"] = { name: "General Lobby", owner: "System", channels: ["main", "random"], stickers: [], invite_code: "general-lobby" };
+        servers["general"] = { name: "General Lobby", owner: "System", channels: ["main", "random"], stickers: [], invite_code: "general-lobby", members: [], bannedUsers: [] };
     }
 }
 loadServersIntoMemory();
@@ -108,6 +120,12 @@ io.on("connection", (socket) => {
     socket.on("join_server", async (serverId) => {
         if (!servers[serverId]) return;
 
+        // Check if user is banned from this server
+        if (servers[serverId].bannedUsers && servers[serverId].bannedUsers.includes(socket.userId)) {
+            socket.emit("message", { system: true, text: "Access denied: You are banned from this server." });
+            return;
+        }
+
         if (socket.currentServer && socket.currentChannel) {
             socket.leave(`${socket.currentServer}_${socket.currentChannel}`);
         }
@@ -118,12 +136,26 @@ io.on("connection", (socket) => {
         const roomKey = `${socket.currentServer}_${socket.currentChannel}`;
         socket.join(roomKey);
 
+        // Automatically track user as member if not already
+        if (serverId !== "general" && socket.userId) {
+            if (!servers[serverId].members.includes(socket.userId)) {
+                servers[serverId].members.push(socket.userId);
+                try {
+                    await pool.query(`UPDATE servers SET members = $1 WHERE id = $2`, [servers[serverId].members, serverId]);
+                } catch (err) {
+                    console.error("Error adding member to DB:", err);
+                }
+            }
+        }
+
         socket.emit("server_switched", { 
             serverId, 
             channel: socket.currentChannel, 
             channels: servers[serverId].channels,
             stickers: servers[serverId].stickers || [],
-            inviteCode: servers[serverId].invite_code
+            inviteCode: servers[serverId].invite_code,
+            members: servers[serverId].members || [],
+            bannedUsers: servers[serverId].bannedUsers || []
         });
 
         try {
@@ -162,6 +194,12 @@ io.on("connection", (socket) => {
 
         if (!targetServerId) {
             socket.emit("message", { system: true, text: "Invalid invite code or server no longer exists." });
+            return;
+        }
+
+        // Check if banned
+        if (servers[targetServerId].bannedUsers && servers[targetServerId].bannedUsers.includes(socket.userId)) {
+            socket.emit("message", { system: true, text: "You are banned from this server." });
             return;
         }
 
@@ -229,7 +267,7 @@ io.on("connection", (socket) => {
     // Rename Channel Handler
     socket.on("rename_channel", async ({ oldName, newName }) => {
         const srv = servers[socket.currentServer];
-        if (!srv || oldName === "main") return; // Keep "main" protected if needed
+        if (!srv || oldName === "main") return;
 
         const cleanNewName = newName.toLowerCase().replace(/[^a-z0-9-_]/g, '-').trim();
         if (!cleanNewName || srv.channels.includes(cleanNewName)) return;
@@ -243,7 +281,6 @@ io.on("connection", (socket) => {
 
             try {
                 await pool.query(`UPDATE servers SET channels = $1 WHERE id = $2`, [srv.channels, socket.currentServer]);
-                // Update messages channel tag so history is preserved under new name
                 await pool.query(`UPDATE messages SET channel = $1 WHERE server_id = $2 AND channel = $3`, [cleanNewName, socket.currentServer, oldName]);
             } catch (err) {
                 console.error("Error renaming channel in DB:", err);
@@ -261,19 +298,22 @@ io.on("connection", (socket) => {
         const inviteCode = Math.random().toString(36).substr(2, 8);
         const defaultChannels = ["main", "general"];
         const defaultStickers = [];
+        const initialMembers = [socket.userId];
 
         servers[serverId] = { 
             name: serverName, 
             owner: socket.username, 
             channels: defaultChannels,
             stickers: defaultStickers,
-            invite_code: inviteCode
+            invite_code: inviteCode,
+            members: initialMembers,
+            bannedUsers: []
         };
 
         try {
             await pool.query(
-                `INSERT INTO servers (id, name, owner, channels, stickers, invite_code) VALUES ($1, $2, $3, $4, $5, $6)`,
-                [serverId, serverName, socket.username, defaultChannels, defaultStickers, inviteCode]
+                `INSERT INTO servers (id, name, owner, channels, stickers, invite_code, members, banned_users) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+                [serverId, serverName, socket.username, defaultChannels, defaultStickers, inviteCode, initialMembers, []]
             );
         } catch (err) {
             console.error("Error saving new server:", err);
@@ -286,8 +326,8 @@ io.on("connection", (socket) => {
     // Delete Custom Server Handler
     socket.on("delete_server", async (serverId) => {
         if (serverId === "general" || !servers[serverId]) return;
-        if (servers[serverId].owner !== socket.username) {
-            socket.emit("message", { system: true, text: "Permission denied: Only the server owner can delete this server." });
+        if (servers[serverId].owner !== socket.username && socket.userId !== ADMIN_USER_ID) {
+            socket.emit("message", { system: true, text: "Permission denied: Only the server owner or admin can delete this server." });
             return;
         }
 
@@ -312,7 +352,7 @@ io.on("connection", (socket) => {
                 return;
             }
         } else {
-            if (servers[serverId].owner !== socket.username) {
+            if (servers[serverId].owner !== socket.username && socket.userId !== ADMIN_USER_ID) {
                 socket.emit("message", { system: true, text: "Permission denied." });
                 return;
             }
@@ -328,6 +368,113 @@ io.on("connection", (socket) => {
         }
 
         io.emit("server_list", servers);
+    });
+
+    // --- CUSTOM SERVER MODERATION: KICK MEMBER ---
+    socket.on("kick_member", async ({ serverId, targetUserId }) => {
+        const srv = servers[serverId];
+        if (!srv || serverId === "general") return;
+
+        const isOwner = (srv.owner === socket.username);
+        const isAdmin = (socket.userId === ADMIN_USER_ID);
+
+        if (!isOwner && !isAdmin) {
+            socket.emit("message", { system: true, text: "Permission denied: Only the server owner can kick members." });
+            return;
+        }
+
+        srv.members = srv.members.filter(id => id !== targetUserId);
+        try {
+            await pool.query(`UPDATE servers SET members = $1 WHERE id = $2`, [srv.members, serverId]);
+        } catch (err) {
+            console.error("Error updating members after kick:", err);
+        }
+
+        io.to(serverId).emit("member_list_updated", srv.members);
+        // Force target user out of the room if connected
+        io.in(targetUserId).socketsLeave(`${serverId}_${srv.channels[0]}`);
+        io.to(targetUserId).emit("force_switch_server", "general");
+        socket.emit("message", { system: true, text: "Member kicked successfully." });
+    });
+
+    // --- CUSTOM SERVER MODERATION: BAN MEMBER ---
+    socket.on("ban_member", async ({ serverId, targetUserId }) => {
+        const srv = servers[serverId];
+        if (!srv || serverId === "general") return;
+
+        const isOwner = (srv.owner === socket.username);
+        const isAdmin = (socket.userId === ADMIN_USER_ID);
+
+        if (!isOwner && !isAdmin) {
+            socket.emit("message", { system: true, text: "Permission denied: Only the server owner can ban members." });
+            return;
+        }
+
+        srv.members = srv.members.filter(id => id !== targetUserId);
+        if (!srv.bannedUsers.includes(targetUserId)) {
+            srv.bannedUsers.push(targetUserId);
+        }
+
+        try {
+            await pool.query(`UPDATE servers SET members = $1, banned_users = $2 WHERE id = $3`, [srv.members, srv.bannedUsers, serverId]);
+        } catch (err) {
+            console.error("Error updating ban list in DB:", err);
+        }
+
+        io.to(serverId).emit("member_list_updated", srv.members);
+        io.to(serverId).emit("ban_list_updated", srv.bannedUsers);
+        
+        io.in(targetUserId).socketsLeave(`${serverId}_${srv.channels[0]}`);
+        io.to(targetUserId).emit("force_switch_server", "general");
+        socket.emit("message", { system: true, text: "Member banned and added to ban list." });
+    });
+
+    // --- CUSTOM SERVER MODERATION: UNBAN MEMBER ---
+    socket.on("unban_member", async ({ serverId, targetUserId }) => {
+        const srv = servers[serverId];
+        if (!srv || serverId === "general") return;
+
+        const isOwner = (srv.owner === socket.username);
+        const isAdmin = (socket.userId === ADMIN_USER_ID);
+
+        if (!isOwner && !isAdmin) {
+            socket.emit("message", { system: true, text: "Permission denied." });
+            return;
+        }
+
+        srv.bannedUsers = srv.bannedUsers.filter(id => id !== targetUserId);
+        try {
+            await pool.query(`UPDATE servers SET banned_users = $1 WHERE id = $2`, [srv.bannedUsers, serverId]);
+        } catch (err) {
+            console.error("Error updating ban list during unban:", err);
+        }
+
+        io.to(serverId).emit("ban_list_updated", srv.bannedUsers);
+        socket.emit("message", { system: true, text: "User unbanned successfully." });
+    });
+
+    // --- GLOBAL PNIG OWNER POWER: WIPE / DELETE ACCOUNT ANYTIME ---
+    socket.on("pnig_admin_delete_account", async (targetUserId) => {
+        if (socket.userId !== ADMIN_USER_ID) {
+            socket.emit("message", { system: true, text: "Unauthorized: Master Admin command only." });
+            return;
+        }
+
+        try {
+            // Delete all messages authored by this user across the entire platform
+            await pool.query(`DELETE FROM messages WHERE username IN (SELECT username FROM messages WHERE id = $1)`, [targetUserId]).catch(() => {});
+            // Clear them out from all server member/ban configurations
+            for (const sId of Object.keys(servers)) {
+                servers[sId].members = servers[sId].members.filter(id => id !== targetUserId);
+                servers[sId].bannedUsers = servers[sId].bannedUsers.filter(id => id !== targetUserId);
+                await pool.query(`UPDATE servers SET members = $1, banned_users = $2 WHERE id = $3`, [servers[sId].members, servers[sId].bannedUsers, sId]);
+            }
+            // Force disconnect their active socket sessions
+            io.in(targetUserId).disconnectSockets(true);
+            console.log(`Master admin wiped account/user ID: ${targetUserId}`);
+        } catch (err) {
+            console.error("Error executing global account wipe:", err);
+        }
     });
 
     // High-Performance Binary Sticker Upload Handler
@@ -404,15 +551,25 @@ io.on("connection", (socket) => {
         await saveAndBroadcastMessage(roomKey, socket.currentServer, socket.currentChannel, msgData);
     });
 
+    // Delete Message Handler (Updated to allow Custom Server Owner & Global Admin override)
     socket.on("delete_message", async (msgId) => {
         if (!socket.currentServer || !socket.currentChannel) return;
         const roomKey = `${socket.currentServer}_${socket.currentChannel}`;
 
         try {
-            const checkRes = await pool.query(`SELECT username FROM messages WHERE id = $1`, [msgId]);
-            if (checkRes.rows.length > 0 && checkRes.rows[0].username === socket.username) {
-                await pool.query(`DELETE FROM messages WHERE id = $1`, [msgId]);
-                io.to(roomKey).emit("message_deleted", msgId);
+            const checkRes = await pool.query(`SELECT username, server_id FROM messages WHERE id = $1`, [msgId]);
+            if (checkRes.rows.length > 0) {
+                const msg = checkRes.rows[0];
+                const srv = servers[msg.server_id];
+                
+                const isAuthor = (msg.username === socket.username);
+                const isServerOwner = srv && (srv.owner === socket.username);
+                const isAdmin = (socket.userId === ADMIN_USER_ID);
+
+                if (isAuthor || isServerOwner || isAdmin) {
+                    await pool.query(`DELETE FROM messages WHERE id = $1`, [msgId]);
+                    io.to(roomKey).emit("message_deleted", msgId);
+                }
             }
         } catch (err) {
             console.error("Error deleting message:", err);
