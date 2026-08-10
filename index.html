@@ -75,6 +75,12 @@
                 <div id="channel-list" class="space-y-1"></div>
             </div>
 
+            <!-- MEMBERS LIST SECTION -->
+            <div class="p-3 border-t border-gray-800 max-h-36 overflow-y-auto">
+                <span class="text-[10px] font-semibold text-gray-500 uppercase block mb-1">Server Members</span>
+                <div id="member-list" class="space-y-1 text-xs"></div>
+            </div>
+
             <div class="p-3 border-t border-gray-800 text-xs text-gray-400 truncate flex items-center justify-between">
                 <span id="user-display-tag" class="font-semibold text-gray-300"></span>
                 <button onclick="logout()" class="text-red-400 hover:underline">Logout</button>
@@ -168,7 +174,7 @@
     </div>
 
     <div id="edit-server-modal" class="hidden fixed inset-0 bg-black/80 flex items-center justify-center p-4">
-        <div class="bg-panel border border-gray-800 p-6 rounded-2xl w-full max-w-md space-y-4">
+        <div class="bg-panel border border-gray-800 p-6 rounded-2xl w-full max-w-md space-y-4 max-h-[90vh] overflow-y-auto">
             <h3 class="font-bold text-lg text-gray-100">Customize Server</h3>
             <div>
                 <label class="text-xs uppercase font-semibold text-gray-500 mb-1 block">Server Name</label>
@@ -180,6 +186,14 @@
                 <div class="flex gap-2">
                     <input id="invite-link-input" type="text" readonly class="flex-1 bg-darkbg border border-gray-700 rounded-lg px-3 py-1.5 text-xs text-gray-400 focus:outline-none">
                     <button onclick="copyInviteLink()" class="bg-gray-800 border border-gray-700 text-gray-300 font-semibold px-3 py-1.5 rounded-lg text-xs hover:bg-gray-700 transition">Copy</button>
+                </div>
+            </div>
+
+            <!-- BAN LIST MANAGEMENT -->
+            <div id="ban-list-section" class="border-t border-gray-800 pt-3">
+                <label class="text-xs uppercase font-semibold text-gray-500 mb-2 block">Banned Users</label>
+                <div id="ban-list-container" class="space-y-2 max-h-32 overflow-y-auto bg-darkbg p-2 rounded-lg border border-gray-700 text-xs">
+                    <span class="text-gray-500 italic">No banned users</span>
                 </div>
             </div>
 
@@ -202,7 +216,7 @@
         let currentSession = null;
         let currentServerId = "general";
         let currentChannel = "main";
-        let allServers = { "general": { name: "General Lobby", owner: "System", channels: ["main", "random"], stickers: [] } };
+        let allServers = { "general": { name: "General Lobby", owner: "System", channels: ["main", "random"], stickers: [], members: [], bans: [] } };
         let currentServerStickers = [];
         let currentInviteCode = "";
         let pendingFile = null;
@@ -259,7 +273,6 @@
             socket.on("connect", () => {
                 socket.emit("auth_user", session);
 
-                // Handle URL invite code lookup automatically on connection
                 const urlParams = new URLSearchParams(window.location.search);
                 const inviteCode = urlParams.get("invite");
                 if (inviteCode) {
@@ -271,6 +284,7 @@
                 allServers = servers;
                 renderServerList();
                 renderChannels(allServers[currentServerId]?.channels || ["main"]);
+                renderMemberList(allServers[currentServerId]?.members || []);
                 updateEditButtonVisibility();
             });
 
@@ -279,8 +293,13 @@
                 currentChannel = data.channel;
                 currentServerStickers = data.stickers || [];
                 currentInviteCode = data.inviteCode || "";
+                if (allServers[currentServerId]) {
+                    allServers[currentServerId].members = data.members || [];
+                    allServers[currentServerId].bans = data.bans || [];
+                }
                 renderChannels(data.channels);
                 renderStickerDrawer(currentServerStickers);
+                renderMemberList(data.members || []);
                 updateEditButtonVisibility();
             });
 
@@ -299,6 +318,20 @@
                     allServers[currentServerId].channels = channels;
                 }
                 renderChannels(channels);
+            });
+
+            socket.on("members_updated", (members) => {
+                if (allServers[currentServerId]) {
+                    allServers[currentServerId].members = members;
+                }
+                renderMemberList(members);
+            });
+
+            socket.on("bans_updated", (bans) => {
+                if (allServers[currentServerId]) {
+                    allServers[currentServerId].bans = bans;
+                }
+                renderBanList(bans);
             });
 
             socket.on("stickers_updated", (stickers) => {
@@ -430,7 +463,11 @@
 
                 let headerHtml = `<div class="flex items-baseline justify-between"><div class="flex items-baseline gap-2"><span class="font-semibold text-accent text-sm">${msg.username}</span><span class="text-[10px] text-gray-500">${msg.time || ''}</span></div>`;
                 
-                if (currentSession && msg.username === currentSession.username) {
+                const isGeneralAdmin = (currentSession?.userId === ADMIN_USER_ID);
+                const isCustomOwner = (currentServerId !== "general" && allServers[currentServerId] && allServers[currentServerId].owner === currentSession?.username);
+                const canDelete = currentSession && (msg.username === currentSession.username || isCustomOwner || isGeneralAdmin);
+
+                if (canDelete) {
                     headerHtml += `<button onclick="deleteMessage('${msg.id}')" class="text-xs text-gray-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition px-1" title="Delete message">🗑️</button>`;
                 }
                 headerHtml += `</div>`;
@@ -530,6 +567,78 @@
                 list.appendChild(itemDiv);
             });
             document.getElementById("current-channel-title").innerText = "# " + currentChannel;
+        }
+
+        function renderMemberList(members) {
+            const list = document.getElementById("member-list");
+            list.innerHTML = "";
+            const isGeneralAdmin = (currentServerId === "general" && currentSession?.userId === ADMIN_USER_ID);
+            const isCustomOwner = (currentServerId !== "general" && allServers[currentServerId] && allServers[currentServerId].owner === currentSession?.username);
+
+            if (!members || members.length === 0) {
+                list.innerHTML = `<span class="text-gray-500 italic">No members tracked</span>`;
+                return;
+            }
+
+            members.forEach(member => {
+                const div = document.createElement("div");
+                div.className = "flex items-center justify-between text-gray-300 py-0.5";
+                
+                let nameSpan = document.createElement("span");
+                nameSpan.className = "truncate flex-1";
+                nameSpan.innerText = member.username;
+                div.appendChild(nameSpan);
+
+                // Global admin account deletion power or Owner Kick/Ban controls
+                if (isGeneralAdmin && member.userId !== ADMIN_USER_ID) {
+                    const delAccBtn = document.createElement("button");
+                    delAccBtn.className = "text-[10px] bg-red-500/20 text-red-400 px-1.5 py-0.5 rounded ml-1 hover:bg-red-500 hover:text-white";
+                    delAccBtn.innerText = "Delete Account";
+                    delAccBtn.title = "Master Admin: Delete User Account";
+                    delAccBtn.onclick = () => {
+                        if (confirm(`Permanently delete account for ${member.username}?`)) {
+                            socket.emit("admin_delete_account", member.userId);
+                        }
+                    };
+                    div.appendChild(delAccBtn);
+                }
+
+                if ((isCustomOwner || isGeneralAdmin) && member.username !== currentSession?.username) {
+                    const kickBtn = document.createElement("button");
+                    kickBtn.className = "text-[10px] bg-yellow-500/20 text-yellow-400 px-1 py-0.5 rounded ml-1 hover:bg-yellow-500 hover:text-darkbg";
+                    kickBtn.innerText = "Kick";
+                    kickBtn.onclick = () => socket.emit("kick_member", { serverId: currentServerId, userId: member.userId });
+                    div.appendChild(kickBtn);
+
+                    const banBtn = document.createElement("button");
+                    banBtn.className = "text-[10px] bg-red-500/20 text-red-400 px-1 py-0.5 rounded ml-1 hover:bg-red-500 hover:text-white";
+                    banBtn.innerText = "Ban";
+                    banBtn.onclick = () => socket.emit("ban_member", { serverId: currentServerId, userId: member.userId });
+                    div.appendChild(banBtn);
+                }
+
+                list.appendChild(div);
+            });
+        }
+
+        function renderBanList(bans) {
+            const container = document.getElementById("ban-list-container");
+            container.innerHTML = "";
+            if (!bans || bans.length === 0) {
+                container.innerHTML = `<span class="text-gray-500 italic">No banned users</span>`;
+                return;
+            }
+
+            bans.forEach(ban => {
+                const div = document.createElement("div");
+                div.className = "flex items-center justify-between py-1";
+                div.innerHTML = `<span>${ban.username}</span><button onclick="unbanUser('${ban.userId}')" class="bg-gray-800 text-accent px-2 py-0.5 rounded hover:bg-gray-700">Unban</button>`;
+                container.appendChild(div);
+            });
+        }
+
+        function unbanUser(userId) {
+            socket.emit("unban_member", { serverId: currentServerId, userId: userId });
         }
 
         function promptRenameChannel(oldName) {
@@ -645,6 +754,8 @@
 
             input.value = srv.name;
             inviteInput.value = `${window.location.origin}${window.location.pathname}?invite=${currentInviteCode}`;
+
+            renderBanList(srv.bans || []);
 
             const isGeneralAdmin = (currentServerId === "general" && currentSession?.userId === ADMIN_USER_ID);
             const isCustomOwner = (currentServerId !== "general" && srv.owner === currentSession?.username);
