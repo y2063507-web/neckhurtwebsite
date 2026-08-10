@@ -16,7 +16,7 @@ const pool = new Pool({
     ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
 });
 
-// Automatically ensure tables and columns exist on startup (Split for node-postgres compatibility)
+// Automatically ensure tables and default General lobby exist on startup
 async function initializeDatabase() {
     try {
         await pool.query(`
@@ -45,6 +45,12 @@ async function initializeDatabase() {
                 file_type TEXT,
                 time TEXT
             );
+        `);
+        // Ensure General lobby exists in DB so it handles channels and history properly
+        await pool.query(`
+            INSERT INTO servers (id, name, owner, channels, stickers, invite_code, members)
+            VALUES ('general', 'General Lobby', 'System', ARRAY['main', 'random'], ARRAY[]::text[], '', '[]'::jsonb)
+            ON CONFLICT (id) DO NOTHING;
         `);
         console.log("Database initialized successfully.");
     } catch (err) {
@@ -76,8 +82,8 @@ io.on("connection", (socket) => {
     socket.on("join_server", async (serverId) => {
         try {
             const res = await pool.query("SELECT * FROM servers WHERE id = $1", [serverId]);
-            const srv = serverId === "general" ? { id: "general", name: "General Lobby", channels: ["main", "random"], stickers: [], invite_code: "" } : res.rows[0];
-            if (!srv) return;
+            if (res.rows.length === 0) return;
+            const srv = res.rows[0];
 
             const rooms = Array.from(socket.rooms);
             rooms.forEach(r => { if (r !== socket.id) socket.leave(r); });
@@ -150,6 +156,7 @@ io.on("connection", (socket) => {
             if (!members.includes(user.username)) {
                 members.push(user.username);
                 await pool.query("UPDATE servers SET members = $1 WHERE id = $2", [JSON.stringify(members), srv.id]);
+                broadcastServerList();
             }
 
             socket.emit("force_switch_server", srv.id);
@@ -179,6 +186,7 @@ io.on("connection", (socket) => {
     socket.on("delete_server", async (serverId) => {
         const user = activeUsers[socket.id];
         if (!user) return;
+        if (serverId === "general") return; // Can't delete general lobby
 
         try {
             const res = await pool.query("SELECT * FROM servers WHERE id = $1", [serverId]);
@@ -196,6 +204,66 @@ io.on("connection", (socket) => {
         }
     });
 
+    // --- KICK & BAN IMPLEMENTATION ---
+    socket.on("kick_member", async ({ serverId, username }) => {
+        const user = activeUsers[socket.id];
+        if (!user) return;
+
+        try {
+            const res = await pool.query("SELECT * FROM servers WHERE id = $1", [serverId]);
+            if (res.rows.length === 0) return;
+            const srv = res.rows[0];
+
+            // Check if requester is owner or admin
+            if (srv.owner === user.username || (serverId === "general" && user.userId === ADMIN_USER_ID)) {
+                let members = srv.members || [];
+                members = members.filter(m => m !== username);
+                await pool.query("UPDATE servers SET members = $1 WHERE id = $2", [JSON.stringify(members), serverId]);
+                
+                broadcastServerList();
+
+                // Force kicked user back to general if they are currently online inside that server
+                const sockets = await io.fetchSockets();
+                sockets.forEach(s => {
+                    if (activeUsers[s.id]?.username === username) {
+                        s.emit("force_switch_server", "general");
+                    }
+                });
+            }
+        } catch (err) {
+            console.error("Error kicking member:", err);
+        }
+    });
+
+    socket.on("ban_member", async ({ serverId, username }) => {
+        const user = activeUsers[socket.id];
+        if (!user) return;
+
+        try {
+            const res = await pool.query("SELECT * FROM servers WHERE id = $1", [serverId]);
+            if (res.rows.length === 0) return;
+            const srv = res.rows[0];
+
+            if (srv.owner === user.username || (serverId === "general" && user.userId === ADMIN_USER_ID)) {
+                let members = srv.members || [];
+                members = members.filter(m => m !== username);
+                // Also track banned list if your frontend supports it, otherwise stripping from members prevents access via invite
+                await pool.query("UPDATE servers SET members = $1 WHERE id = $2", [JSON.stringify(members), serverId]);
+                
+                broadcastServerList();
+
+                const sockets = await io.fetchSockets();
+                sockets.forEach(s => {
+                    if (activeUsers[s.id]?.username === username) {
+                        s.emit("force_switch_server", "general");
+                    }
+                });
+            }
+        } catch (err) {
+            console.error("Error banning member:", err);
+        }
+    });
+
     socket.on("create_channel", async (channelName) => {
         const user = activeUsers[socket.id];
         if (!user) return;
@@ -209,17 +277,16 @@ io.on("connection", (socket) => {
             }
 
             const res = await pool.query("SELECT channels FROM servers WHERE id = $1", [serverId]);
-            let channels = serverId === "general" ? ["main", "random"] : (res.rows[0]?.channels || []);
+            let channels = res.rows[0]?.channels || ["main"];
             
             if (!channels.includes(channelName)) {
                 channels.push(channelName);
-                if (serverId !== "general") {
-                    await pool.query("UPDATE servers SET channels = $1 WHERE id = $2", [channels, serverId]);
-                }
-                // Broadcast to all channels in this server so everyone sees the update
+                await pool.query("UPDATE servers SET channels = $1 WHERE id = $2", [channels, serverId]);
+                
                 channels.forEach(c => {
                     io.to(`${serverId}_${c}`).emit("channels_updated", channels);
                 });
+                broadcastServerList();
             }
         } catch (err) {
             console.error("Error creating channel:", err);
@@ -244,6 +311,7 @@ io.on("connection", (socket) => {
                 channels.forEach(c => {
                     io.to(`${serverId}_${c}`).emit("channels_updated", channels);
                 });
+                broadcastServerList();
             }
         } catch (err) {
             console.error("Error renaming channel:", err);
@@ -327,6 +395,7 @@ io.on("connection", (socket) => {
 
             await pool.query("UPDATE servers SET stickers = $1 WHERE id = $2", [stickers, data.serverId]);
             io.to(`${data.serverId}_main`).emit("stickers_updated", stickers);
+            broadcastServerList();
         } catch (err) {
             console.error("Error uploading sticker:", err);
         }
@@ -360,9 +429,7 @@ function getSocketServerAndChannel(socket) {
 async function sendServerList(socket) {
     try {
         const res = await pool.query("SELECT * FROM servers");
-        const servers = {
-            "general": { name: "General Lobby", owner: "System", channels: ["main", "random"], stickers: [] }
-        };
+        const servers = {};
         res.rows.forEach(row => {
             servers[row.id] = {
                 name: row.name,
