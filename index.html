@@ -601,51 +601,84 @@
             window.location.reload();
         }
 
-        function openServerModal() { document.getElementById("server-modal").classList.remove("hidden"); }
-        function closeServerModal() { document.getElementById("server-modal").classList.add("hidden"); }
-        function submitServer() {
-            const name = document.getElementById("new-server-input").value.trim();
-            if (name) socket.emit("create_server", name);
+        function openServerModal() {
+            document.getElementById("server-modal").classList.remove("hidden");
+            document.getElementById("new-server-input").focus();
         }
 
-        function openChannelModal() { document.getElementById("channel-modal").classList.remove("hidden"); }
-        function closeChannelModal() { document.getElementById("channel-modal").classList.add("hidden"); }
+        function closeServerModal() {
+            document.getElementById("server-modal").classList.add("hidden");
+            document.getElementById("new-server-input").value = "";
+        }
+
+        function submitServer() {
+            const name = document.getElementById("new-server-input").value.trim();
+            if (!name) return alert("Enter a server name!");
+            socket.emit("create_server", name);
+        }
+
+        function openChannelModal() {
+            document.getElementById("channel-modal").classList.remove("hidden");
+            document.getElementById("new-channel-input").focus();
+        }
+
+        function closeChannelModal() {
+            document.getElementById("channel-modal").classList.add("hidden");
+            document.getElementById("new-channel-input").value = "";
+        }
+
         function submitChannel() {
             const name = document.getElementById("new-channel-input").value.trim();
-            if (name) {
-                socket.emit("create_channel", name);
-                document.getElementById("new-channel-input").value = "";
-                closeChannelModal();
-            }
+            if (!name) return;
+            socket.emit("create_channel", name);
+            closeChannelModal();
         }
 
         function openEditServerModal() {
-            const currentSrv = allServers[currentServerId];
-            if (currentSrv) {
-                document.getElementById("edit-server-input").value = currentSrv.name;
-                document.getElementById("invite-link-input").value = `${window.location.origin}${window.location.pathname}?invite=${currentInviteCode}`;
-            }
-
+            const modal = document.getElementById("edit-server-modal");
+            const input = document.getElementById("edit-server-input");
+            const inviteInput = document.getElementById("invite-link-input");
             const deleteBtn = document.getElementById("delete-server-btn");
-            if (currentServerId !== "general") {
+
+            const srv = allServers[currentServerId];
+            if (!srv) return;
+
+            input.value = srv.name;
+            inviteInput.value = `${window.location.origin}${window.location.pathname}?invite=${currentInviteCode}`;
+
+            const isGeneralAdmin = (currentServerId === "general" && currentSession?.userId === ADMIN_USER_ID);
+            const isCustomOwner = (currentServerId !== "general" && srv.owner === currentSession?.username);
+
+            if (currentServerId !== "general" && (isCustomOwner || isGeneralAdmin)) {
                 deleteBtn.classList.remove("hidden");
             } else {
                 deleteBtn.classList.add("hidden");
             }
 
-            document.getElementById("edit-server-modal").classList.remove("hidden");
+            modal.classList.remove("hidden");
+            input.focus();
         }
-        function closeEditServerModal() { document.getElementById("edit-server-modal").classList.add("hidden"); }
+
+        function closeEditServerModal() {
+            document.getElementById("edit-server-modal").classList.add("hidden");
+        }
+
         function submitEditServer() {
             const newName = document.getElementById("edit-server-input").value.trim();
-            if (newName) {
-                socket.emit("update_server", { serverId: currentServerId, newName: newName });
-                closeEditServerModal();
-            }
+            if (!newName) return;
+            socket.emit("update_server", { serverId: currentServerId, newName: newName });
+            closeEditServerModal();
         }
 
         function escapeHtml(text) {
-            return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+            const map = {
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#039;'
+            };
+            return text.replace(/[&<>"']/g, function(m) { return map[m]; });
         }
     </script>
 </body>
