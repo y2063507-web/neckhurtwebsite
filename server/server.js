@@ -50,13 +50,13 @@ app.get("/", (req, res) => {
 
 // Active session tracking per socket
 const activeUsers = {};
+const ADMIN_USER_ID = "usr_kbyc5yhe2";
 
 io.on("connection", (socket) => {
     console.log(`User connected: ${socket.id}`);
 
     socket.on("auth_user", (session) => {
         activeUsers[socket.id] = session;
-        // Default join general lobby
         socket.join("general_main");
         sendServerList(socket);
         loadHistory(socket, "general", "main");
@@ -65,10 +65,9 @@ io.on("connection", (socket) => {
     socket.on("join_server", async (serverId) => {
         try {
             const res = await pool.query("SELECT * FROM servers WHERE id = $1", [serverId]);
-            if (res.rows.length === 0) return;
-            const srv = res.rows[0];
+            const srv = serverId === "general" ? { id: "general", name: "General Lobby", channels: ["main", "random"], stickers: [], invite_code: "" } : res.rows[0];
+            if (!srv) return;
 
-            // Leave current rooms
             const rooms = Array.from(socket.rooms);
             rooms.forEach(r => { if (r !== socket.id) socket.leave(r); });
 
@@ -81,7 +80,7 @@ io.on("connection", (socket) => {
                 channels: srv.channels || ["main"],
                 channel: defaultChannel,
                 stickers: srv.stickers || [],
-                inviteCode: srv.invite_code
+                inviteCode: srv.invite_code || ""
             });
 
             loadHistory(socket, srv.id, defaultChannel);
@@ -148,6 +147,94 @@ io.on("connection", (socket) => {
         }
     });
 
+    socket.on("update_server", async (data) => {
+        const user = activeUsers[socket.id];
+        if (!user) return;
+
+        try {
+            const res = await pool.query("SELECT * FROM servers WHERE id = $1", [data.serverId]);
+            if (res.rows.length === 0) return;
+            const srv = res.rows[0];
+
+            if (srv.owner === user.username || (data.serverId === "general" && user.userId === ADMIN_USER_ID)) {
+                await pool.query("UPDATE servers SET name = $1 WHERE id = $2", [data.newName, data.serverId]);
+                broadcastServerList();
+            }
+        } catch (err) {
+            console.error("Error updating server:", err);
+        }
+    });
+
+    socket.on("delete_server", async (serverId) => {
+        const user = activeUsers[socket.id];
+        if (!user) return;
+
+        try {
+            const res = await pool.query("SELECT * FROM servers WHERE id = $1", [serverId]);
+            if (res.rows.length === 0) return;
+            const srv = res.rows[0];
+
+            if (srv.owner === user.username) {
+                await pool.query("DELETE FROM servers WHERE id = $1", [serverId]);
+                await pool.query("DELETE FROM messages WHERE server_id = $1", [serverId]);
+                socket.emit("force_switch_server", "general");
+                broadcastServerList();
+            }
+        } catch (err) {
+            console.error("Error deleting server:", err);
+        }
+    });
+
+    socket.on("create_channel", async (channelName) => {
+        const user = activeUsers[socket.id];
+        if (!user) return;
+        const { serverId } = getSocketServerAndChannel(socket);
+
+        try {
+            if (serverId === "general" && user.userId !== ADMIN_USER_ID) return;
+            if (serverId !== "general") {
+                const srvRes = await pool.query("SELECT owner FROM servers WHERE id = $1", [serverId]);
+                if (srvRes.rows.length === 0 || srvRes.rows[0].owner !== user.username) return;
+            }
+
+            const res = await pool.query("SELECT channels FROM servers WHERE id = $1", [serverId]);
+            let channels = serverId === "general" ? ["main", "random"] : (res.rows[0]?.channels || []);
+            
+            if (!channels.includes(channelName)) {
+                channels.push(channelName);
+                if (serverId === "general") {
+                    // Update general channels cache or handle accordingly
+                } else {
+                    await pool.query("UPDATE servers SET channels = $1 WHERE id = $2", [channels, serverId]);
+                }
+                io.to(`${serverId}_${channels[0]}`).emit("channels_updated", channels);
+            }
+        } catch (err) {
+            console.error("Error creating channel:", err);
+        }
+    });
+
+    socket.on("rename_channel", async (data) => {
+        const user = activeUsers[socket.id];
+        if (!user) return;
+        const { serverId } = getSocketServerAndChannel(socket);
+
+        try {
+            const res = await pool.query("SELECT * FROM servers WHERE id = $1", [serverId]);
+            if (res.rows.length === 0) return;
+            const srv = res.rows[0];
+
+            if (srv.owner === user.username || (serverId === "general" && user.userId === ADMIN_USER_ID)) {
+                let channels = srv.channels || ["main", "random"];
+                channels = channels.map(c => c === data.oldName ? data.newName : c);
+                await pool.query("UPDATE servers SET channels = $1 WHERE id = $2", [channels, serverId]);
+                io.to(`${serverId}_${channels[0]}`).emit("channels_updated", channels);
+            }
+        } catch (err) {
+            console.error("Error renaming channel:", err);
+        }
+    });
+
     socket.on("chat_message", async (text) => {
         const user = activeUsers[socket.id];
         if (!user) return;
@@ -187,7 +274,6 @@ io.on("connection", (socket) => {
         const msgId = 'msg_' + Math.random().toString(36).substr(2, 9);
         const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-        // Convert binary buffer to data URI for simple storage/rendering
         const base64Data = data.file.toString("base64");
         const fileUrl = `data:${data.fileType};base64,${base64Data}`;
 
@@ -231,22 +317,6 @@ io.on("connection", (socket) => {
         }
     });
 
-    socket.on("create_channel", async (channelName) => {
-        const { serverId } = getSocketServerAndChannel(socket);
-        try {
-            const res = await pool.query("SELECT channels FROM servers WHERE id = $1", [serverId]);
-            if (res.rows.length === 0) return;
-            let channels = res.rows[0].channels || [];
-            if (!channels.includes(channelName)) {
-                channels.push(channelName);
-                await pool.query("UPDATE servers SET channels = $1 WHERE id = $2", [channels, serverId]);
-                io.to(`${serverId}_${channels[0]}`).emit("channels_updated", channels);
-            }
-        } catch (err) {
-            console.error("Error creating channel:", err);
-        }
-    });
-
     socket.on("delete_message", async (msgId) => {
         try {
             await pool.query("DELETE FROM messages WHERE id = $1", [msgId]);
@@ -282,10 +352,10 @@ async function sendServerList(socket) {
             servers[row.id] = {
                 name: row.name,
                 owner: row.owner,
-                channels: row.channels,
-                stickers: row.stickers,
-                inviteCode: row.invite_code,
-                members: row.members
+                channels: row.channels || ["main"],
+                stickers: row.stickers || [],
+                inviteCode: row.invite_code || "",
+                members: row.members || []
             };
         });
         socket.emit("server_list", servers);
