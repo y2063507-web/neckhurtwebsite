@@ -51,6 +51,7 @@ async function initializeDatabase() {
         `);
         await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();`);
         await pool.query(`CREATE INDEX IF NOT EXISTS messages_server_channel_idx ON messages (server_id, channel, created_at);`);
+        await pool.query(`CREATE TABLE IF NOT EXISTS deleted_accounts (user_id TEXT PRIMARY KEY);`);
         await pool.query(`
             INSERT INTO servers (id, name, owner, channels, stickers, invite_code, members, bans)
             VALUES ('general', 'General Lobby', 'System', ARRAY['main', 'random'], ARRAY[]::text[], '', '[]'::jsonb, '[]'::jsonb)
@@ -136,9 +137,17 @@ function moveSocket(socket, serverId, channel) {
     socket.join(channelRoom(serverId, channel));
 }
 
+function isMember(srv, user) {
+    if (!srv || !user) return false;
+    if (srv.id === "general") return true;
+    if (isManager(srv, user)) return true;
+    return normalizeList(srv.members).some((m) => sameUser(m, user));
+}
+
 function buildServerList(rows, user) {
     const servers = {};
     rows.forEach((row) => {
+        if (!isMember(row, user)) return; // custom servers are private: members only
         servers[row.id] = {
             name: row.name,
             owner: row.owner,
@@ -263,6 +272,14 @@ io.on("connection", (socket) => {
         const user = activeUsers[socket.id];
 
         try {
+            const deleted = await pool.query("SELECT 1 FROM deleted_accounts WHERE user_id = $1", [user.userId]);
+            if (deleted.rows.length > 0) {
+                socket.emit("account_deleted");
+                delete activeUsers[socket.id];
+                setTimeout(() => socket.disconnect(true), 200);
+                return;
+            }
+
             const general = await getServer("general");
             if (general && normalizeList(general.bans).some((b) => sameUser(b, user))) {
                 socket.disconnect(true);
@@ -285,6 +302,12 @@ io.on("connection", (socket) => {
             if (!srv) return;
 
             if (normalizeList(srv.bans).some((b) => sameUser(b, user))) {
+                if (srv.id !== "general") socket.emit("force_switch_server", "general");
+                return;
+            }
+
+            // Not a member (never invited, or kicked)? Send them back to General.
+            if (!isMember(srv, user)) {
                 if (srv.id !== "general") socket.emit("force_switch_server", "general");
                 return;
             }
@@ -447,6 +470,7 @@ io.on("connection", (socket) => {
         if (!user || user.userId !== ADMIN_USER_ID) return;
         if (typeof targetUserId !== "string" || !targetUserId || targetUserId === ADMIN_USER_ID) return;
         try {
+            await pool.query("INSERT INTO deleted_accounts (user_id) VALUES ($1) ON CONFLICT DO NOTHING", [targetUserId]);
             await pool.query(
                 `UPDATE servers SET members = COALESCE(
                     (SELECT jsonb_agg(m) FROM jsonb_array_elements(members) m WHERE m->>'userId' IS DISTINCT FROM $1),
@@ -455,7 +479,10 @@ io.on("connection", (socket) => {
             );
             const sockets = await io.fetchSockets();
             sockets.forEach((s) => {
-                if (activeUsers[s.id]?.userId === targetUserId) s.disconnect(true);
+                if (activeUsers[s.id]?.userId === targetUserId) {
+                    s.emit("account_deleted");
+                    setTimeout(() => s.disconnect(true), 200);
+                }
             });
             await broadcastServerList();
         } catch (err) {
